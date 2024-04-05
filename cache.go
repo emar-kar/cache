@@ -177,7 +177,16 @@ func (c *Cache) ChangeSizeFn(fn func(string, any) (uint64, error)) {
 // which runs when key is being cleaned after expiration.
 // If janitor is cleaning cache, this function will wait until it
 // finishes, before changing on eviction function.
+// Deprecated: use [ChangeOnEvictionFn] instead.
 func (c *Cache) ChangeOnEviction(fn func(string, any)) {
+	c.ChangeOnEvictionFn(fn)
+}
+
+// ChangeOnEvictionFn updates cache default options with new function
+// which runs when key is being cleaned after expiration.
+// If janitor is cleaning cache, this function will wait until it
+// finishes, before changing on eviction function.
+func (c *Cache) ChangeOnEvictionFn(fn func(string, any)) {
 	c.StopCleaning()
 	c.mu.Lock()
 	c.opts.onEviction = fn
@@ -394,7 +403,7 @@ func (c *Cache) Delete(k string) {
 	}
 }
 
-// DeleteAll removes all units from cache applying on eviction function
+// DeleteAll removes all keys from cache applying on eviction function
 // if it was set.
 func (c *Cache) DeleteAll() {
 	c.mu.Lock()
@@ -475,7 +484,7 @@ func (c *Cache) Length() int {
 	return len(c.units)
 }
 
-// Size returns current cache size in bytes.
+// Size returns current size of the cache in bytes.
 func (c *Cache) Size() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -497,7 +506,7 @@ func (c *Cache) Revive(k string) error {
 	return nil
 }
 
-// ReviveUntil prolongs lifetime of the key with given duration.
+// ReviveUntil prolongs lifetime of the key with specified value.
 func (c *Cache) ReviveUntil(k string, lt uint64) error {
 	u, ok := c.getUnit(k)
 	if !ok {
