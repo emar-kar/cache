@@ -177,7 +177,16 @@ func (c *Cache) ChangeSizeFn(fn func(string, any) (uint64, error)) {
 // which runs when key is being cleaned after expiration.
 // If janitor is cleaning cache, this function will wait until it
 // finishes, before changing on eviction function.
+// Deprecated: use [ChangeOnEvictionFn] instead.
 func (c *Cache) ChangeOnEviction(fn func(string, any)) {
+	c.ChangeOnEvictionFn(fn)
+}
+
+// ChangeOnEvictionFn updates cache default options with new function
+// which runs when key is being cleaned after expiration.
+// If janitor is cleaning cache, this function will wait until it
+// finishes, before changing on eviction function.
+func (c *Cache) ChangeOnEvictionFn(fn func(string, any)) {
 	c.StopCleaning()
 	c.mu.Lock()
 	c.opts.onEviction = fn
