@@ -959,3 +959,102 @@ func ExampleCache_withOptions() {
 		fmt.Println(v) // Prints: "bar".
 	}
 }
+
+func ExampleCache_saveLoad() {
+	c := New(
+		WithDefaultLifetime(uint64(time.Hour)),
+		WithMaxSize(1028),
+	)
+
+	if err := c.Set("foo", "simple string"); err != nil {
+		// Process error...
+	}
+
+	type test struct {
+		Str string `json:"str"`
+	}
+
+	testStruct := &test{"string in struct"}
+
+	if err := c.Set("foo2", testStruct); err != nil {
+		// Process error...
+	}
+
+	if err := c.Set("foo3", []string{"string in slice"}); err != nil {
+		// Process error...
+	}
+
+	if err := c.Set("foo4", map[string]string{"bar": "string in map"}); err != nil {
+		// Process error...
+	}
+
+	dumpFile := "dump.json"
+
+	f, err := os.Create(dumpFile)
+	if err != nil {
+		// Process error...
+	}
+
+	if err := c.Save(f); err != nil {
+		f.Close()
+		// Process error...
+	}
+
+	f.Close()
+	c.RemoveAll()
+
+	f, err = os.Open(dumpFile)
+	if err != nil {
+		// Process error...
+	}
+	defer f.Close()
+
+	if err := c.Load(f); err != nil {
+		// Process error...
+	}
+
+	str, err := c.Get("foo")
+	if err != nil {
+		// Process error...
+	}
+
+	fmt.Println(str) // Prints: "simple string".
+
+	if str, err := c.Get("foo2"); err != nil {
+		// Process error...
+	} else {
+		jsonData, err := json.Marshal(str)
+		if err != nil {
+			// Process error...
+		}
+
+		var structData test
+		if err := json.Unmarshal(jsonData, &structData); err != nil {
+			// Process error...
+		}
+
+		// structData.Str == "string in struct".
+	}
+
+	if str, err := c.Get("foo3"); err != nil {
+		// Process error...
+	} else {
+		sl := make([]string, len(str.([]any)))
+		for i, el := range str.([]any) {
+			sl[i] = el.(string)
+		}
+
+		// sl[0] == "string in slice".
+	}
+
+	if str, err := c.Get("foo4"); err != nil {
+		// Process error...
+	} else {
+		m := make(map[string]string, len(str.(map[string]any)))
+		for k, v := range str.(map[string]any) {
+			m[k] = v.(string)
+		}
+
+		// m["bar"] == "string in map".
+	}
+}
