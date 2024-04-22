@@ -79,6 +79,30 @@ func Decrement[T Integer](c *Cache, k string, n T) (T, error)
 
 Those functions will return error if key does not exist, was expired or it's data type assertion failed.
 
+### Eviction with goroutines
+
+Since it was decided to remove explicit goroutine call for eviction functions in `Delete*` methods, here is the workaround how to implement this anyway:
+
+```go
+goEviction := func() func(string, any) {
+    return func(str string, a any) {
+        go func() {
+            // Do something with key and value...
+        }()
+    }
+}
+
+c := New(WithOnEvictionFn(goEviction()))
+
+if err := c.Set("foo", "simple string"); err != nil {
+    // Process error...
+}
+
+c.Delete("foo")
+
+// Wait until goroutine finish onEviction...
+```
+
 ### Save/Load
 
 Experimentally there is a support of marshal/unmarshal data to `json` format. Since data is stored as `any` interface, it can dump custom formats as well. Those features are experimental and might change in future. Check examples for more details.
