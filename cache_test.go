@@ -247,12 +247,18 @@ func TestCacheDelete(t *testing.T) {
 	done := make(chan struct{}, 1)
 	var sb strings.Builder
 
+	goEviction := func() func(string, any) {
+		return func(s string, a any) {
+			go func() {
+				sb.WriteString(fmt.Sprintf("unit %q: removed", s))
+				close(done)
+			}()
+		}
+	}
+
 	c := New(
 		WithMaxSize(50),
-		WithOnEviction(func(s string, a any) {
-			sb.WriteString(fmt.Sprintf("unit %q: removed", s))
-			close(done)
-		}),
+		WithOnEviction(goEviction()),
 	)
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
