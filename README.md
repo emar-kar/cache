@@ -36,7 +36,7 @@ In addition to global cache options, user can set individual lifetime per key or
 | `ScanFunc` | Scans current snapshot of the cache and returns key-value map if given func returns true for a key |
 | `Set` | Saves data in cache with given key and options. If key already exists it will be replaced without warnings |
 | `Add` | Sets data in cache if given key does not exist |
-| `Replace` | replaces data of the given key only if this key exists in cache and is not expired |
+| `Replace` | Replaces data of the given key only if this key exists in cache and is not expired |
 | `Rename` | Renames old key with a new name only if given key exists in cache and is not expired |
 | `Remove` | Removes key with given name from cache. Do nothing if key does not exist. Does not apply on eviction function even if it was set |
 | `RemoveAll` | Removes all keys from cache. Does not apply on eviction function even if it was set. Runs GC to collect released memory |
@@ -78,6 +78,30 @@ func Decrement[T Integer](c *Cache, k string, n T) (T, error)
 ```
 
 Those functions will return error if key does not exist, was expired or it's data type assertion failed.
+
+### Eviction with goroutines
+
+Since it was decided to remove explicit goroutine call for eviction functions in `Delete*` methods, here is the workaround how to implement this anyway:
+
+```go
+goEviction := func() func(string, any) {
+    return func(str string, a any) {
+        go func() {
+            // Do something with key and value...
+        }()
+    }
+}
+
+c := New(WithOnEvictionFn(goEviction()))
+
+if err := c.Set("foo", "simple string"); err != nil {
+    // Process error...
+}
+
+c.Delete("foo")
+
+// Wait until goroutine finish onEviction...
+```
 
 ### Save/Load
 
@@ -189,7 +213,7 @@ BenchmarkCacheGetDataWithLifetime-10            30645175                37.39 ns
 BenchmarkCacheGetData-10                        66297579                18.03 ns/op            0 B/op          0 allocs/op
 BenchmarkCacheGetExpiredConcurrent-10            8271970               135.1 ns/op             0 B/op          0 allocs/op
 BenchmarkCacheGetDataConcurrent-10               9178712               135.5 ns/op             0 B/op          0 allocs/op
-BenchmarkCacheSetWithOpts-10                    21413689                56.22 ns/op            0 B/op        0 allocs/op
+BenchmarkCacheSetWithOpts-10                    21413689                56.22 ns/op            0 B/op          0 allocs/op
 BenchmarkCacheSetData-10                        35918688                30.92 ns/op            0 B/op          0 allocs/op
 BenchmarkCacheIncrement-10                      25929056                45.62 ns/op            7 B/op          0 allocs/op
 BenchmarkCacheDecrement-10                      25951790                45.72 ns/op            7 B/op          0 allocs/op

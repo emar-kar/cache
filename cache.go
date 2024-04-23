@@ -399,7 +399,7 @@ func (c *Cache) Delete(k string) {
 	c.mu.Unlock()
 
 	if c.opts.onEviction != nil {
-		go c.opts.onEviction(k, u)
+		c.opts.onEviction(k, u.Data)
 	}
 }
 
@@ -410,7 +410,7 @@ func (c *Cache) DeleteAll() {
 
 	for k, u := range c.units {
 		if c.opts.onEviction != nil {
-			go c.opts.onEviction(k, u)
+			c.opts.onEviction(k, u.Data)
 		}
 	}
 
@@ -437,7 +437,7 @@ func (c *Cache) DeleteExpired() {
 			delete(c.units, k)
 
 			if c.opts.onEviction != nil {
-				go c.opts.onEviction(k, u)
+				c.opts.onEviction(k, u.Data)
 			}
 		}
 	}

@@ -247,12 +247,18 @@ func TestCacheDelete(t *testing.T) {
 	done := make(chan struct{}, 1)
 	var sb strings.Builder
 
+	goEviction := func() func(string, any) {
+		return func(s string, a any) {
+			go func() {
+				sb.WriteString(fmt.Sprintf("unit %q: remove data: %q", s, a))
+				close(done)
+			}()
+		}
+	}
+
 	c := New(
 		WithMaxSize(50),
-		WithOnEviction(func(s string, a any) {
-			sb.WriteString(fmt.Sprintf("unit %q: removed", s))
-			close(done)
-		}),
+		WithOnEviction(goEviction()),
 	)
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
@@ -279,7 +285,7 @@ func TestCacheDelete(t *testing.T) {
 			return
 		case <-done:
 			if _, err := c.Get("foo"); errors.Is(err, ErrNotExists) {
-				if sb.String() != `unit "foo": removed` {
+				if sb.String() != `unit "foo": remove data: "bar"` {
 					t.Error("on eviction got:", sb.String())
 				}
 
@@ -615,7 +621,7 @@ func TestCacheJanitorEviction(t *testing.T) {
 		WithCleanupInteval(250*time.Millisecond),
 		WithoutJanitorEviction,
 		WithOnEviction(func(s string, a any) {
-			sb.WriteString(fmt.Sprintf("unit %q: removed", s))
+			sb.WriteString(fmt.Sprintf("unit %q: remove data: %q", s, a))
 			close(done)
 		}),
 	)
@@ -653,7 +659,7 @@ func TestCacheJanitorEviction(t *testing.T) {
 			return
 		case <-done:
 			if _, err := c.Get("foo"); errors.Is(err, ErrNotExists) {
-				if sb.String() != `unit "foo": removed` {
+				if sb.String() != `unit "foo": remove data: "bar"` {
 					t.Error("on eviction got:", sb.String())
 				}
 
