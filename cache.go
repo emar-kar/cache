@@ -391,7 +391,7 @@ func (c *Cache[T]) Remove(k string) {
 // Runs GC to collect released memory.
 func (c *Cache[T]) RemoveAll() {
 	c.mu.Lock()
-	c.units = make(map[string]unit[T], 0)
+	clear(c.units)
 	c.size = 0
 	c.mu.Unlock()
 	runtime.GC()
@@ -439,7 +439,7 @@ func (c *Cache[T]) DeleteAll() {
 		}
 	}
 
-	c.units = make(map[string]unit, 0)
+	clear(c.units)
 	c.size = 0
 	c.mu.Unlock()
 }
