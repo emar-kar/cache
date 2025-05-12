@@ -5,7 +5,7 @@ This package is a simple in-memory key-value storage based on golang map type. C
 ### Import
 
 ```go
-import "github.com/emar-kar/cache"
+import "github.com/emar-kar/cache/v2"
 ```
 
 ### Increment/decrement values
