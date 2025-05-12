@@ -389,9 +389,9 @@ func (c *Cache[T]) Remove(k string) {
 // RemoveAll removes all keys from cache.
 // Does not apply on eviction function even if it was set.
 // Runs GC to collect released memory.
-func (c *Cache) RemoveAll() {
+func (c *Cache[T]) RemoveAll() {
 	c.mu.Lock()
-	c.units = make(map[string]unit, 0)
+	c.units = make(map[string]unit[T], 0)
 	c.size = 0
 	c.mu.Unlock()
 	runtime.GC()
