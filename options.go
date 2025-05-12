@@ -13,6 +13,7 @@ type cacheOpts struct {
 	defaultLifetime  uint64
 	maxLength        uint64
 	maxSize          uint64
+	displacement     bool
 	janitorWEviction bool
 }
 
@@ -34,6 +35,13 @@ func getSizeOf(key string, data any) (uint64, error) {
 }
 
 type cacheOptFn func(*cacheOpts)
+
+// WithDisplacement allows displacement of variables in cache.
+// In case if adding new value will exceed max size or max length
+// of the cache, random value will be removed to free up the space.
+func WithDisplacement(co *cacheOpts) {
+	co.displacement = true
+}
 
 // WithDefaultLifetime sets default lifetime for key in cache.
 func WithDefaultLifetime(lt uint64) cacheOptFn {
