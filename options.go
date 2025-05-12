@@ -84,11 +84,11 @@ func WithDataSizeFn(fn func(string, any) (uint64, error)) cacheOptFn {
 	}
 }
 
-type unitOptFn func(unit) unit
+type unitOptFn[T any] func(unit[T]) unit[T]
 
 // WithLifetime sets custom lifetime for cache key.
-func WithLifetime(lt uint64) unitOptFn {
-	return func(u unit) unit {
+func WithLifetime[T any](lt uint64) unitOptFn[T] {
+	return func(u unit[T]) unit[T] {
 		u.Exp = lt
 		return u
 	}
@@ -96,8 +96,8 @@ func WithLifetime(lt uint64) unitOptFn {
 
 // WithSize sets custom size for key data. If set, cache will ignore
 // size calculation and use passed value. Adds default metadata size.
-func WithSize(s uint64) unitOptFn {
-	return func(u unit) unit {
+func WithSize[T any](s uint64) unitOptFn[T] {
+	return func(u unit[T]) unit[T] {
 		u.Size = s + defaultUnitSize
 		return u
 	}
