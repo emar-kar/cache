@@ -239,6 +239,25 @@ func (c *Cache[T]) getUnit(k string) (unit[T], bool) {
 	return u, ok
 }
 
+// deleteOneRnd takes first random key from the underlaying map.
+func (c *Cache[T]) deleteOneRnd() {
+	for k, u := range c.units {
+		c.delete(k, u)
+		return
+	}
+}
+
+func (c *Cache[T]) delete(k string, u unit[T]) {
+	delete(c.units, k)
+	if c.opts.maxSize != 0 {
+		c.size -= u.Size
+	}
+
+	if c.opts.onEviction != nil {
+		c.opts.onEviction(k, u.Data)
+	}
+}
+
 // Scan scans current [Snapshot] of the cache data and returns key-value map if key
 // contains given sub-string.
 func (c *Cache[T]) Scan(sub string) map[string]T {
