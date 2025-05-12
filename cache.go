@@ -152,7 +152,6 @@ func (c *Cache) ChangeMaxSize(i uint64) error {
 
 	if c.size > i {
 		c.mu.Unlock()
-
 		return ErrMaxSize
 	}
 
@@ -164,12 +163,15 @@ func (c *Cache) ChangeMaxSize(i uint64) error {
 
 // ChangeMaxLength updates cache default options with new max number of keys.
 // Returns [ErrMaxLength] if new value is lower than number of keys already in cache.
-func (c *Cache) ChangeMaxLength(ml uint64) error {
-	if c.Length() > int(ml) {
+	c.mu.Lock()
+
+	if len(c.units) > int(ml) {
+		c.mu.Unlock()
 		return ErrMaxLength
 	}
 
 	c.opts.maxLength = ml
+	c.mu.Unlock()
 
 	return nil
 }
@@ -190,15 +192,6 @@ func (c *Cache) ChangeSizeFn(fn func(string, any) (uint64, error)) {
 	c.mu.Unlock()
 }
 
-// ChangeOnEviction updates cache default options with new function
-// which runs when key is being cleaned after expiration.
-// If janitor is cleaning cache, this function will wait until it
-// finishes, before changing on eviction function.
-// Deprecated: use [ChangeOnEvictionFn] instead.
-func (c *Cache) ChangeOnEviction(fn func(string, any)) {
-	c.ChangeOnEvictionFn(fn)
-}
-
 // ChangeOnEvictionFn updates cache default options with new function
 // which runs when key is being cleaned after expiration.
 // If janitor is cleaning cache, this function will wait until it
@@ -207,8 +200,8 @@ func (c *Cache) ChangeOnEvictionFn(fn func(string, any)) {
 	c.StopCleaning()
 	c.mu.Lock()
 	c.opts.onEviction = fn
-	c.mu.Unlock()
 	c.j = hireJanitor(c.opts.cleanupInterval)
+	c.mu.Unlock()
 
 	go c.inviteJanitor()
 }
@@ -328,9 +321,8 @@ func (c *Cache) Replace(k string, a any) error {
 		return &unitError{k, ErrExpired}
 	}
 
-	u.Data = a
-
 	c.mu.Lock()
+	u.Data = a
 	c.units[k] = u
 	c.mu.Unlock()
 
