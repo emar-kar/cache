@@ -67,14 +67,6 @@ func WithMaxSize(ms uint64) cacheOptFn {
 	return func(co *cacheOpts) { co.maxSize = ms }
 }
 
-// WithOnEviction sets custom function which is applied when key is being
-// deleted from cache.
-//
-// Deprecated: use [WithOnEvictionFn] instead.
-func WithOnEviction(fn func(string, any)) cacheOptFn {
-	return WithOnEvictionFn(fn)
-}
-
 // WithOnEvictionFn sets custom function which is applied when key is being
 // deleted from cache.
 func WithOnEvictionFn(fn func(string, any)) cacheOptFn {
@@ -84,13 +76,6 @@ func WithOnEvictionFn(fn func(string, any)) cacheOptFn {
 // WithoutJanitorEviction sets janitor to clean expired keys without applying
 // on eviction function even if it was set.
 func WithoutJanitorEviction(co *cacheOpts) { co.janitorWEviction = false }
-
-// WithDataSize sets function which defines data size.
-//
-// Deprecated: use [WithDataSizeFn] instead.
-func WithDataSize(fn func(string, any) (uint64, error)) cacheOptFn {
-	return WithDataSizeFn(fn)
-}
 
 // WithDataSizeFn sets function which defines data size.
 func WithDataSizeFn(fn func(string, any) (uint64, error)) cacheOptFn {
