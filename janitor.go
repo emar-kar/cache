@@ -7,7 +7,6 @@ import (
 type janitor struct {
 	t    *time.Ticker
 	stop chan struct{}
-	done chan struct{}
 }
 
 func (c *Cache) inviteJanitor() {
@@ -21,7 +20,6 @@ func (c *Cache) inviteJanitor() {
 		select {
 		case <-c.j.t.C:
 		case <-c.j.stop:
-			close(c.j.done)
 			return
 		}
 	}
@@ -35,12 +33,10 @@ func hireJanitor(d time.Duration) *janitor {
 	return &janitor{
 		t:    time.NewTicker(d),
 		stop: make(chan struct{}, 1),
-		done: make(chan struct{}, 1),
 	}
 }
 
 func (j *janitor) fireJanitor() {
 	j.t.Stop()
 	close(j.stop)
-	<-j.done
 }
