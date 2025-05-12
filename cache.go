@@ -196,6 +196,13 @@ func (c *Cache) ChangeOnEvictionFn(fn func(string, any)) {
 	go c.inviteJanitor()
 }
 
+// ChangeDisplacementPolicy updates cache options with new displacement.
+func (c *Cache[T]) ChangeDisplacementPolicy(v bool) {
+	c.mu.Lock()
+	c.opts.displacement = v
+	c.mu.Unlock()
+}
+
 // Get returns data of the given key. If key does not exist then
 // [ErrNotExists] will be returned. If key is already expired, but
 // was not yet cleaned, returns data and [ErrExpired] as error.
