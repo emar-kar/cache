@@ -220,15 +220,14 @@ func (c *Cache[T]) ChangeDisplacementPolicy(v bool) {
 // was not yet cleaned, returns data and [ErrExpired] as error.
 func (c *Cache[T]) Get(k string) (T, error) {
 	u, ok := c.getUnit(k)
-	if !ok {
-		return nil, &unitError{k, ErrNotExists}
-	}
-
-	if u.expired() {
+	switch {
+	case !ok:
+		return *new(T), &unitError{k, ErrNotExists}
+	case u.expired():
 		return u.Data, &unitError{k, ErrExpired}
+	default:
+		return u.Data, nil
 	}
-
-	return u.Data, nil
 }
 
 func (c *Cache[T]) getUnit(k string) (unit[T], bool) {
