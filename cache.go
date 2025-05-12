@@ -91,16 +91,22 @@ func New(opts ...cacheOptFn) *Cache {
 // until janitor is unlocked if it is in cleaning progress.
 func (c *Cache) StopCleaning() {
 	if c.j != nil {
+		c.mu.Lock()
 		c.j.fireJanitor()
 		c.j = nil
+		c.mu.Unlock()
 	}
 }
 
 // OrderCleaning stops current janitor if it was set and starts a new one with
 // cache default cleanup interval.
-func (c *Cache) OrderCleaning() {
-	c.StopCleaning()
+	c.mu.Lock()
+	if c.j != nil {
+		c.j.fireJanitor()
+	}
+
 	c.j = hireJanitor(c.opts.cleanupInterval)
+	c.mu.Unlock()
 
 	go c.inviteJanitor()
 }
@@ -112,8 +118,17 @@ func (c *Cache) RescheduleCleaning(d time.Duration) error {
 		return ErrDuration
 	}
 
+	c.mu.Lock()
 	c.opts.cleanupInterval = d
-	c.OrderCleaning()
+
+	if c.j != nil {
+		c.j.fireJanitor()
+	}
+
+	c.j = hireJanitor(c.opts.cleanupInterval)
+	c.mu.Unlock()
+
+	go c.inviteJanitor()
 
 	return nil
 }
@@ -123,8 +138,10 @@ func (c *Cache) RescheduleCleaning(d time.Duration) error {
 // even if it was set. Restart janitor if it's currently running.
 func (c *Cache) ChangeJanitorOnEviction(b bool) {
 	c.StopCleaning()
+	c.mu.Lock()
 	c.opts.janitorWEviction = b
 	c.j = hireJanitor(c.opts.cleanupInterval)
+	c.mu.Unlock()
 
 	go c.inviteJanitor()
 }
