@@ -9,7 +9,7 @@ type janitor struct {
 	stop chan struct{}
 }
 
-func (c *Cache) inviteJanitor() {
+func (c *Cache[T]) inviteJanitor() {
 	for {
 		if c.opts.janitorWEviction {
 			c.DeleteExpired()
