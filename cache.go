@@ -363,7 +363,7 @@ func (c *Cache[T]) Rename(oldKey, newKey string) error {
 
 	c.mu.Lock()
 	c.units[newKey] = u
-	delete(c.units, oldKey)
+	c.delete(oldKey, u)
 	c.mu.Unlock()
 
 	return nil
@@ -421,6 +421,10 @@ func (c *Cache[T]) RemoveExpired() {
 // Delete removes key with given name from cache. Do nothing if key
 // does not exist. Applies on eviction function if it was set.
 func (c *Cache[T]) Delete(k string) {
+	if u, ok := c.getUnit(k); ok {
+		c.mu.Lock()
+		c.delete(k, u)
+		c.mu.Unlock()
 	}
 }
 
