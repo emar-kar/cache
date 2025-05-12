@@ -281,8 +281,21 @@ func (c *Cache[T]) ScanFunc(fn func(string) bool) map[string]T {
 // Set saves data in cache with given key and options.
 // If key already exists, it will be removed before adding new value.
 func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
+	c.mu.Lock()
+
+	ou, ok := c.units[k]
+	if ok {
+		c.delete(k, ou)
+	}
+
+	if !ok && c.opts.maxLength != 0 {
 		if len(c.units)+1 > int(c.opts.maxLength) {
-			return ErrMaxLength
+			if !c.opts.displacement {
+				c.mu.Unlock()
+				return ErrMaxLength
+			}
+
+			c.deleteOneRnd()
 		}
 	}
 
@@ -299,6 +312,7 @@ func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
 		if u.Size == 0 {
 			s, err := c.opts.getDataSize(k, a)
 			if err != nil {
+				c.mu.Unlock()
 				return &unitError{k, err}
 			}
 
@@ -306,13 +320,19 @@ func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
 		}
 
 		if c.size+u.Size > c.opts.maxSize {
-			return ErrMaxSize
+			if !c.opts.displacement {
+				c.mu.Unlock()
+				return ErrMaxSize
+			}
+
+			for c.size > c.opts.maxSize {
+				c.deleteOneRnd()
+			}
 		}
 
 		c.size += u.Size
 	}
 
-	c.mu.Lock()
 	c.units[k] = u
 	c.mu.Unlock()
 
