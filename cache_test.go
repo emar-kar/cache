@@ -18,7 +18,7 @@ import (
 var ErrTest = errors.New("test error")
 
 func TestEmptyCacheStats(t *testing.T) {
-	c := New()
+	c := New[any]()
 	stats := c.Stats()
 
 	if stats.DefaultLifetime != 0 {
@@ -45,18 +45,18 @@ func TestEmptyCacheStats(t *testing.T) {
 }
 
 func TestCacheWithOpts(t *testing.T) {
-	c := New(
+	c := New[any](
 		WithMaxSize(52),
 		WithMaxUnits(2),
-		WithOnEviction(func(s string, a any) {}),
-		WithDataSize(getSizeOf),
+		WithOnEvictionFn(func(s string, a any) {}),
+		WithDataSizeFn(getSizeOf),
 	)
 
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := c.Set("foo2", "bar2", WithSize(100)); !errors.Is(err, ErrMaxSize) {
+	if err := c.Set("foo2", "bar2", WithSize[any](100)); !errors.Is(err, ErrMaxSize) {
 		t.Errorf("got: %q; expected: %q", err, ErrMaxSize)
 	}
 
@@ -90,7 +90,7 @@ func TestCacheWithOpts(t *testing.T) {
 
 	c.ChangeMaxSize(100)
 
-	if err := c.Set("foo2", "bar2", WithLifetime(uint64(100*time.Millisecond))); err != nil {
+	if err := c.Set("foo2", "bar2", WithLifetime[any](uint64(100*time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,6 +107,20 @@ func TestCacheWithOpts(t *testing.T) {
 
 	if data != "bar2" {
 		t.Errorf("unit data got: %q; expected: \"bar2\"", data)
+	}
+
+	c.ChangeDisplacementPolicy(true)
+
+	if err := c.Set("foo3", "bar"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.ChangeMaxLength(5); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.Set("foo4", "bar"); err != nil {
+		t.Fatal(err)
 	}
 
 	c.DeleteAll()
@@ -134,7 +148,7 @@ func TestCacheWithOpts(t *testing.T) {
 }
 
 func TestCacheScan(t *testing.T) {
-	c := New()
+	c := New[any]()
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +171,7 @@ func TestCacheScan(t *testing.T) {
 }
 
 func TestCacheAdd(t *testing.T) {
-	c := New()
+	c := New[any]()
 	if err := c.Add("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +182,7 @@ func TestCacheAdd(t *testing.T) {
 }
 
 func TestCacheReplace(t *testing.T) {
-	c := New()
+	c := New[any]()
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +218,7 @@ func TestCacheReplace(t *testing.T) {
 }
 
 func TestCacheRename(t *testing.T) {
-	c := New()
+	c := New[any]()
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -256,9 +270,9 @@ func TestCacheDelete(t *testing.T) {
 		}
 	}
 
-	c := New(
+	c := New[any](
 		WithMaxSize(50),
-		WithOnEviction(goEviction()),
+		WithOnEvictionFn(goEviction()),
 	)
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
@@ -298,7 +312,7 @@ func TestCacheDelete(t *testing.T) {
 }
 
 func TestCacheExpired(t *testing.T) {
-	c := New(WithDefaultLifetime(uint64(100 * time.Millisecond)))
+	c := New[any](WithDefaultLifetime(uint64(100 * time.Millisecond)))
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +330,7 @@ func TestCacheExpired(t *testing.T) {
 }
 
 func TestCacheRemove(t *testing.T) {
-	c := New(WithMaxSize(1028))
+	c := New[any](WithMaxSize(1028))
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +344,7 @@ func TestCacheRemove(t *testing.T) {
 }
 
 func TestCacheRemoveAll(t *testing.T) {
-	c := New()
+	c := New[any]()
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +361,7 @@ func TestCacheRemoveAll(t *testing.T) {
 }
 
 func TestCacheRemoveExpired(t *testing.T) {
-	c := New(WithDefaultLifetime(uint64(100*time.Millisecond)), WithMaxSize(1028))
+	c := New[any](WithDefaultLifetime(uint64(100*time.Millisecond)), WithMaxSize(1028))
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -368,12 +382,12 @@ func TestCacheRemoveExpired(t *testing.T) {
 }
 
 func TestCacheAlive(t *testing.T) {
-	c := New(WithDefaultLifetime(uint64(100 * time.Millisecond)))
+	c := New[any](WithDefaultLifetime(uint64(100 * time.Millisecond)))
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := c.Set("bar", "foo", WithLifetime(uint64(5*time.Minute))); err != nil {
+	if err := c.Set("bar", "foo", WithLifetime[any](uint64(5*time.Minute))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -392,8 +406,8 @@ func TestCacheAlive(t *testing.T) {
 
 func TestCacheRevive(t *testing.T) {
 	d := uint64(5 * time.Minute)
-	c := New(WithDefaultLifetime(d))
-	if err := c.Set("foo", "bar", WithLifetime(uint64(100*time.Millisecond))); err != nil {
+	c := New[any](WithDefaultLifetime(d))
+	if err := c.Set("foo", "bar", WithLifetime[any](uint64(100*time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -413,7 +427,7 @@ func TestCacheRevive(t *testing.T) {
 	}
 
 	if u.expired() {
-		t.Fatal("unit did not expire")
+		t.Fatal("unit expire")
 	}
 
 	if err := c.Revive("bar"); !errors.Is(err, ErrNotExists) {
@@ -422,8 +436,8 @@ func TestCacheRevive(t *testing.T) {
 }
 
 func TestCacheReviveUntil(t *testing.T) {
-	c := New(WithDefaultLifetime(uint64(5 * time.Minute)))
-	if err := c.Set("foo", "bar", WithLifetime(uint64(100*time.Millisecond))); err != nil {
+	c := New[any](WithDefaultLifetime(uint64(5 * time.Minute)))
+	if err := c.Set("foo", "bar", WithLifetime[any](uint64(100*time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -445,7 +459,7 @@ func TestCacheReviveUntil(t *testing.T) {
 	}
 
 	if u.expired() {
-		t.Fatal("unit did not expire")
+		t.Fatal("unit expire")
 	}
 
 	if err := c.ReviveUntil("bar", d); !errors.Is(err, ErrNotExists) {
@@ -454,7 +468,7 @@ func TestCacheReviveUntil(t *testing.T) {
 }
 
 func TestCacheIncrement(t *testing.T) {
-	c := New()
+	c := New[int]()
 	if err := c.Set("test", 0); err != nil {
 		t.Fatal(err)
 	}
@@ -485,18 +499,10 @@ func TestCacheIncrement(t *testing.T) {
 	if _, err := Increment(c, "test", 1); !errors.Is(err, ErrExpired) {
 		t.Fatal("unit did not expire")
 	}
-
-	if err := c.Set("foo", "bar"); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := Increment(c, "foo", 1); !errors.Is(err, ErrNotInt) {
-		t.Fatal("string was incremented")
-	}
 }
 
 func TestCacheDecrement(t *testing.T) {
-	c := New()
+	c := New[int]()
 	if err := c.Set("test", 1); err != nil {
 		t.Fatal(err)
 	}
@@ -527,18 +533,10 @@ func TestCacheDecrement(t *testing.T) {
 	if _, err := Decrement(c, "test", 1); !errors.Is(err, ErrExpired) {
 		t.Fatal("unit did not expire")
 	}
-
-	if err := c.Set("foo", "bar"); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := Decrement(c, "foo", 1); !errors.Is(err, ErrNotInt) {
-		t.Fatal("string was incremented")
-	}
 }
 
 func TestCacheJanitor(t *testing.T) {
-	c := New(
+	c := New[any](
 		WithCleanupInteval(time.Hour),
 		WithDefaultLifetime(uint64(time.Minute)),
 		WithMaxSize(100),
@@ -548,7 +546,7 @@ func TestCacheJanitor(t *testing.T) {
 
 	done := make(chan struct{}, 1)
 
-	c.ChangeOnEviction(func(s string, a any) {
+	c.ChangeOnEvictionFn(func(s string, a any) {
 		sb.WriteString(fmt.Sprintf("unit %q: removed", s))
 		close(done)
 	})
@@ -617,16 +615,16 @@ func TestCacheJanitorEviction(t *testing.T) {
 
 	done := make(chan struct{}, 1)
 
-	c := New(
+	c := New[any](
 		WithCleanupInteval(250*time.Millisecond),
 		WithoutJanitorEviction,
-		WithOnEviction(func(s string, a any) {
+		WithOnEvictionFn(func(s string, a any) {
 			sb.WriteString(fmt.Sprintf("unit %q: remove data: %q", s, a))
 			close(done)
 		}),
 	)
 
-	if err := c.Set("foo", "bar", WithLifetime(uint64(100*time.Millisecond))); err != nil {
+	if err := c.Set("foo", "bar", WithLifetime[any](uint64(100*time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -642,7 +640,7 @@ func TestCacheJanitorEviction(t *testing.T) {
 		t.Error(&unitError{"foo", ErrExists})
 	}
 
-	if err := c.Set("foo", "bar", WithLifetime(uint64(100*time.Millisecond))); err != nil {
+	if err := c.Set("foo", "bar", WithLifetime[any](uint64(100*time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -686,7 +684,7 @@ type writer struct{}
 func (*writer) Write([]byte) (int, error) { return 0, nil }
 
 func TestCacheSaveLoad(t *testing.T) {
-	c := New(
+	c := New[any](
 		WithDefaultLifetime(uint64(time.Hour)),
 		WithMaxSize(1028),
 	)
@@ -794,7 +792,7 @@ func TestCacheSaveLoad(t *testing.T) {
 	}
 
 	if err := c.Load(&readerNilByte{}); err == nil {
-		t.Error("cache load successed with nil read buffer")
+		t.Error("cache load succeeded with nil read buffer")
 	}
 
 	c.RemoveAll()
@@ -807,42 +805,42 @@ func TestCacheSaveLoad(t *testing.T) {
 	}
 
 	if err := c.Save(&writer{}); err == nil {
-		t.Error("cache save successed with unsupported type")
+		t.Error("cache save succeeded with unsupported type")
 	}
 }
 
 func BenchmarkCacheGetDataWithLifetime(b *testing.B) {
 	b.StopTimer()
-	c := New()
-	c.Set("foo", "bar", WithLifetime(uint64(5*time.Minute)))
+	c := New[any]()
+	c.Set("foo", "bar", WithLifetime[any](uint64(5*time.Minute)))
 	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		c.Get("foo")
 	}
 }
 
 func BenchmarkCacheGetData(b *testing.B) {
 	b.StopTimer()
-	c := New()
+	c := New[any]()
 	c.Set("foo", "bar")
 	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		c.Get("foo")
 	}
 }
 
 func BenchmarkCacheGetExpiredConcurrent(b *testing.B) {
 	b.StopTimer()
-	c := New()
-	c.Set("foo", "bar", WithLifetime(uint64(5*time.Minute)))
+	c := New[any]()
+	c.Set("foo", "bar", WithLifetime[any](uint64(5*time.Minute)))
 	wg := new(sync.WaitGroup)
 	workers := runtime.NumCPU()
 	each := b.N / workers
 	wg.Add(workers)
 	b.StartTimer()
-	for i := 0; i < workers; i++ {
+	for range workers {
 		go func() {
-			for j := 0; j < each; j++ {
+			for range each {
 				c.Get("foo")
 			}
 			wg.Done()
@@ -853,16 +851,16 @@ func BenchmarkCacheGetExpiredConcurrent(b *testing.B) {
 
 func BenchmarkCacheGetDataConcurrent(b *testing.B) {
 	b.StopTimer()
-	c := New()
+	c := New[any]()
 	c.Set("foo", "bar")
 	wg := new(sync.WaitGroup)
 	workers := runtime.NumCPU()
 	each := b.N / workers
 	wg.Add(workers)
 	b.StartTimer()
-	for i := 0; i < workers; i++ {
+	for range workers {
 		go func() {
-			for j := 0; j < each; j++ {
+			for range each {
 				c.Get("foo")
 			}
 			wg.Done()
@@ -873,42 +871,42 @@ func BenchmarkCacheGetDataConcurrent(b *testing.B) {
 
 func BenchmarkCacheSetWithOpts(b *testing.B) {
 	b.StopTimer()
-	c := New()
+	c := New[any]()
 	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		c.Set(
 			"foo",
 			"bar",
-			WithLifetime(uint64(100*time.Millisecond)),
-			WithSize(20),
+			WithLifetime[any](uint64(100*time.Millisecond)),
+			WithSize[any](20),
 		)
 	}
 }
 
 func BenchmarkCacheSetData(b *testing.B) {
 	b.StopTimer()
-	c := New()
+	c := New[any]()
 	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		c.Set("foo", "bar")
 	}
 }
 
 func BenchmarkCacheIncrement(b *testing.B) {
 	b.StopTimer()
-	c := New()
+	c := New[int]()
 	if err := c.Set("test", -1); err != nil {
 		b.Error(err)
 	}
 	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		Increment(c, "test", 1)
 	}
 }
 
 func BenchmarkCacheDecrement(b *testing.B) {
 	b.StopTimer()
-	c := New()
+	c := New[int]()
 	if err := c.Set("test", b.N+1); err != nil {
 		b.Error(err)
 	}
@@ -918,8 +916,10 @@ func BenchmarkCacheDecrement(b *testing.B) {
 	}
 }
 
+// TODO: add concurrent Set benchmark and test?
+
 func ExampleCache() {
-	c := New()
+	c := New[any]()
 
 	if err := c.Set("foo", "bar"); err != nil {
 		// Process error...
@@ -934,7 +934,7 @@ func ExampleCache() {
 }
 
 func ExampleCache_withOptions() {
-	c := New(
+	c := New[any](
 		WithCleanupInteval(time.Minute),
 		WithDefaultLifetime(uint64(500*time.Millisecond)),
 	)
@@ -954,7 +954,7 @@ func ExampleCache_withOptions() {
 	_, err = c.Get("foo")
 	fmt.Println(err) // Prints: key "foo": does not exist.
 
-	if err := c.Set("foo", "bar", WithLifetime(uint64(1*time.Second))); err != nil {
+	if err := c.Set("foo", "bar", WithLifetime[any](uint64(1*time.Second))); err != nil {
 		// Process error...
 	}
 
@@ -967,7 +967,7 @@ func ExampleCache_withOptions() {
 }
 
 func ExampleCache_saveLoad() {
-	c := New(
+	c := New[any](
 		WithDefaultLifetime(uint64(time.Hour)),
 		WithMaxSize(1028),
 	)
