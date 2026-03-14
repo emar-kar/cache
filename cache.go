@@ -15,9 +15,6 @@ import (
 	"time"
 )
 
-// Default size of the metadata headers.
-const defaultUnitSize = 16
-
 // runtimeStart holds start time of the cache, to calculate expiration time
 // with monotonic clock instead of relying on system wall clock.
 var runtimeStart = time.Now()
@@ -149,10 +146,23 @@ func (c *Cache[K, T]) ChangeDefaultLifeTime(lt uint64) {
 
 // ChangeSizeFn updates cache default options with new function to define data size.
 // Does not affect keys already in cache.
-func (c *Cache[K, T]) ChangeSizeFn(fn func(K, T) (uint64, error)) {
+func (c *Cache[K, T]) ChangeSizeFn(fn func(K, T) uint64) {
 	c.Lock()
 	c.opts.getDataSize = fn
 	c.Unlock()
+}
+
+// ChangeDataSizeFn updates cache default options with new function to define data size.
+// Does not affect keys already in cache.
+//
+// Deprecated: ChangeDataSizeFn exists for historical compatibility and will be
+// removed in a future version. The error return value is ignored internally.
+// Use [Cache.ChangeSizeFn] instead, which accepts a function without an error return.
+func (c *Cache[K, T]) ChangeDataSizeFn(fn func(K, T) (uint64, error)) {
+	c.ChangeSizeFn(func(k K, t T) uint64 {
+		n, _ := fn(k, t)
+		return n
+	})
 }
 
 // ChangeOnEvictionFn updates cache default options with new function
@@ -288,12 +298,7 @@ func (c *Cache[K, T]) set(k K, a T, opts ...unitOptFn[T]) error {
 
 	if c.opts.maxSize != 0 {
 		if u.Size == 0 {
-			s, err := c.opts.getDataSize(k, a)
-			if err != nil {
-				return &unitError[K]{k, err}
-			}
-
-			u.Size = defaultUnitSize + s
+			u.Size = c.opts.getDataSize(k, a)
 		}
 
 		if c.size+u.Size > c.opts.maxSize {

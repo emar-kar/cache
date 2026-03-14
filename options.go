@@ -1,13 +1,12 @@
 package cache
 
 import (
-	"bytes"
-	"encoding/gob"
 	"time"
+	"unsafe"
 )
 
 type options[K comparable, T any] struct {
-	getDataSize      func(K, T) (uint64, error)
+	getDataSize      func(K, T) uint64
 	onEviction       func(K, T)
 	cleanupInterval  time.Duration
 	defaultLifetime  uint64
@@ -25,21 +24,13 @@ func defaultCacheOpts[K comparable, T any]() *options[K, T] {
 	}
 }
 
-func getSizeOf[K comparable, T any](key K, data T) (uint64, error) {
-	b := new(bytes.Buffer)
-	if err := gob.NewEncoder(b).Encode(data); err != nil {
-		return 0, err
-	}
-
-	n := uint64(b.Len())
-
-	b.Reset()
-
-	if err := gob.NewEncoder(b).Encode(key); err == nil {
-		n += uint64(b.Len())
-	}
-
-	return n, nil
+// getSizeOf returns the in-memory size of the key and data using unsafe.Sizeof.
+// It reports the static layout size of the values — i.e. the size of the struct
+// or scalar itself — but does not follow pointers, so for types like string or
+// []byte the backing allocation is not counted. Use [WithDataSizeFn] when
+// precise deep-size accounting is required.
+func getSizeOf[K comparable, T any](key K, data T) uint64 {
+	return uint64(unsafe.Sizeof(key)) + uint64(unsafe.Sizeof(data))
 }
 
 type cacheOptFn[K comparable, T any] func(*options[K, T])
@@ -86,10 +77,24 @@ func WithOnEvictionFn[K comparable, T any](fn func(K, T)) cacheOptFn[K, T] {
 func WithoutJanitorEviction[K comparable, T any](co *options[K, T]) { co.janitorWEviction = false }
 
 // WithDataSizeFn sets function which defines data size.
+//
+// Deprecated: WithDataSizeFn exists for historical compatibility and will be
+// removed in a future version. The error return value is ignored internally.
+// Use [WithSizeFn] instead, which accepts a function without an error return.
 func WithDataSizeFn[K comparable, T any](fn func(K, T) (uint64, error)) cacheOptFn[K, T] {
 	return func(co *options[K, T]) {
-		co.getDataSize = fn
+		co.getDataSize = func(k K, t T) uint64 {
+			n, _ := fn(k, t)
+			return n
+		}
 	}
+}
+
+// WithSizeFn sets the function used to calculate the in-memory size of a
+// cache entry. The function receives the key and value and must return their
+// combined size in bytes. Use this instead of the deprecated [WithDataSizeFn].
+func WithSizeFn[K comparable, T any](fn func(K, T) uint64) cacheOptFn[K, T] {
+	return func(co *options[K, T]) { co.getDataSize = fn }
 }
 
 type unitOptFn[T any] func(unit[T]) unit[T]
@@ -106,7 +111,7 @@ func WithLifetime[T any](lt uint64) unitOptFn[T] {
 // size calculation and use passed value. Adds default metadata size.
 func WithSize[T any](s uint64) unitOptFn[T] {
 	return func(u unit[T]) unit[T] {
-		u.Size = s + defaultUnitSize
+		u.Size = s
 		return u
 	}
 }
