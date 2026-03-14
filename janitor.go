@@ -17,7 +17,7 @@ type janitor struct {
 // non-positive. hireJanitor must be called with the cache write lock held so
 // that c.j is visible to all goroutines before any of them can call
 // fireJanitor.
-func (c *Cache[T]) hireJanitor() {
+func (c *Cache[K, T]) hireJanitor() {
 	if d := c.opts.cleanupInterval; d > 0 {
 		c.j = &janitor{
 			t:    time.NewTicker(d),
@@ -56,7 +56,7 @@ func (c *Cache[T]) hireJanitor() {
 // fireJanitor stops the current janitor goroutine and clears c.j. It is a
 // no-op when no janitor is running. fireJanitor must be called with the cache
 // write lock held.
-func (c *Cache[T]) fireJanitor() {
+func (c *Cache[K, T]) fireJanitor() {
 	if c.j != nil {
 		c.j.t.Stop()
 		close(c.j.stop)

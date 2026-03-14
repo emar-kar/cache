@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-type cacheOpts struct {
-	getDataSize      func(string, any) (uint64, error)
-	onEviction       func(string, any)
+type options[K comparable, T any] struct {
+	getDataSize      func(K, T) (uint64, error)
+	onEviction       func(K, T)
 	cleanupInterval  time.Duration
 	defaultLifetime  uint64
 	maxLength        uint64
@@ -17,40 +17,48 @@ type cacheOpts struct {
 	janitorWEviction bool
 }
 
-func defaultCacheOpts() *cacheOpts {
-	return &cacheOpts{
-		getDataSize:      getSizeOf,
+func defaultCacheOpts[K comparable, T any]() *options[K, T] {
+	return &options[K, T]{
+		getDataSize:      getSizeOf[K, T],
 		cleanupInterval:  time.Duration(-1),
 		janitorWEviction: true,
 	}
 }
 
-func getSizeOf(key string, data any) (uint64, error) {
+func getSizeOf[K comparable, T any](key K, data T) (uint64, error) {
 	b := new(bytes.Buffer)
 	if err := gob.NewEncoder(b).Encode(data); err != nil {
 		return 0, err
 	}
 
-	return uint64(b.Len() + len(key)), nil
+	n := uint64(b.Len())
+
+	b.Reset()
+
+	if err := gob.NewEncoder(b).Encode(key); err == nil {
+		n += uint64(b.Len())
+	}
+
+	return n, nil
 }
 
-type cacheOptFn func(*cacheOpts)
+type cacheOptFn[K comparable, T any] func(*options[K, T])
 
 // WithDisplacement allows displacement of variables in cache.
 // In case if adding new value will exceed max size or max length
 // of the cache, random value will be removed to free up the space.
-func WithDisplacement(co *cacheOpts) {
+func WithDisplacement[K comparable, T any](co *options[K, T]) {
 	co.displacement = true
 }
 
 // WithDefaultLifetime sets default lifetime for key in cache.
-func WithDefaultLifetime(lt uint64) cacheOptFn {
-	return func(co *cacheOpts) { co.defaultLifetime = lt }
+func WithDefaultLifetime[K comparable, T any](lt uint64) cacheOptFn[K, T] {
+	return func(co *options[K, T]) { co.defaultLifetime = lt }
 }
 
 // WithCleanupInteval sets interval for janitor to clean expired keys.
-func WithCleanupInteval(d time.Duration) cacheOptFn {
-	return func(co *cacheOpts) {
+func WithCleanupInteval[K comparable, T any](d time.Duration) cacheOptFn[K, T] {
+	return func(co *options[K, T]) {
 		if d > 0 {
 			co.cleanupInterval = d
 		}
@@ -58,28 +66,28 @@ func WithCleanupInteval(d time.Duration) cacheOptFn {
 }
 
 // WithMaxUnits sets maxixum number of keys, which can be stored in cache.
-func WithMaxUnits(mu uint64) cacheOptFn {
-	return func(co *cacheOpts) { co.maxLength = mu }
+func WithMaxUnits[K comparable, T any](mu uint64) cacheOptFn[K, T] {
+	return func(co *options[K, T]) { co.maxLength = mu }
 }
 
 // WithMaxSize sets maximum cache data size in bytes.
-func WithMaxSize(ms uint64) cacheOptFn {
-	return func(co *cacheOpts) { co.maxSize = ms }
+func WithMaxSize[K comparable, T any](ms uint64) cacheOptFn[K, T] {
+	return func(co *options[K, T]) { co.maxSize = ms }
 }
 
 // WithOnEvictionFn sets custom function which is applied when key is being
 // deleted from cache.
-func WithOnEvictionFn(fn func(string, any)) cacheOptFn {
-	return func(co *cacheOpts) { co.onEviction = fn }
+func WithOnEvictionFn[K comparable, T any](fn func(K, T)) cacheOptFn[K, T] {
+	return func(co *options[K, T]) { co.onEviction = fn }
 }
 
 // WithoutJanitorEviction sets janitor to clean expired keys without applying
 // on eviction function even if it was set.
-func WithoutJanitorEviction(co *cacheOpts) { co.janitorWEviction = false }
+func WithoutJanitorEviction[K comparable, T any](co *options[K, T]) { co.janitorWEviction = false }
 
 // WithDataSizeFn sets function which defines data size.
-func WithDataSizeFn(fn func(string, any) (uint64, error)) cacheOptFn {
-	return func(co *cacheOpts) {
+func WithDataSizeFn[K comparable, T any](fn func(K, T) (uint64, error)) cacheOptFn[K, T] {
+	return func(co *options[K, T]) {
 		co.getDataSize = fn
 	}
 }
