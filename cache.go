@@ -78,11 +78,7 @@ func New[T any](opts ...cacheOptFn) *Cache[T] {
 	}
 
 	c := &Cache[T]{units: make(map[string]unit[T]), opts: co}
-
-	c.j = hireJanitor(co.cleanupInterval)
-	if c.j != nil {
-		go c.inviteJanitor()
-	}
+	c.hireJanitor()
 
 	return c
 }
@@ -90,26 +86,19 @@ func New[T any](opts ...cacheOptFn) *Cache[T] {
 // StopCleaning stops current janitor if it was set. This function waits
 // until janitor is unlocked if it is in cleaning progress.
 func (c *Cache[T]) StopCleaning() {
-	if c.j != nil {
-		c.Lock()
-		c.j.fireJanitor()
-		c.j = nil
-		c.Unlock()
-	}
+	c.Lock()
+	c.fireJanitor()
+	c.Unlock()
 }
 
 // OrderCleaning stops current janitor if it was set and starts a new one with
 // cache default cleanup interval.
 func (c *Cache[T]) OrderCleaning() {
 	c.Lock()
-	if c.j != nil {
-		c.j.fireJanitor()
-	}
-
-	c.j = hireJanitor(c.opts.cleanupInterval)
+	c.fireJanitor()
+	c.hireJanitor()
 	c.Unlock()
 
-	go c.inviteJanitor()
 }
 
 // RescheduleCleaning stops current janitor if it was set, updates cache default
@@ -121,15 +110,9 @@ func (c *Cache[T]) RescheduleCleaning(d time.Duration) error {
 
 	c.Lock()
 	c.opts.cleanupInterval = d
-
-	if c.j != nil {
-		c.j.fireJanitor()
-	}
-
-	c.j = hireJanitor(c.opts.cleanupInterval)
+	c.fireJanitor()
+	c.hireJanitor()
 	c.Unlock()
-
-	go c.inviteJanitor()
 
 	return nil
 }
@@ -141,10 +124,9 @@ func (c *Cache[T]) ChangeJanitorOnEviction(b bool) {
 	c.StopCleaning()
 	c.Lock()
 	c.opts.janitorWEviction = b
-	c.j = hireJanitor(c.opts.cleanupInterval)
+	c.hireJanitor()
 	c.Unlock()
 
-	go c.inviteJanitor()
 }
 
 // ChangeMaxSize updates cache default options with new cache max size in bytes.
@@ -202,10 +184,8 @@ func (c *Cache[T]) ChangeOnEvictionFn(fn func(string, T)) {
 	c.StopCleaning()
 	c.Lock()
 	c.opts.onEviction = fn
-	c.j = hireJanitor(c.opts.cleanupInterval)
+	c.hireJanitor()
 	c.Unlock()
-
-	go c.inviteJanitor()
 }
 
 // ChangeDisplacementPolicy updates cache options with new displacement.
