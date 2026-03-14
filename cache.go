@@ -25,10 +25,18 @@ const defaultUnitSize = 16
 var runtimeStart = time.Now()
 
 var (
-	ErrDuration  = errors.New("non-positive duration")
-	ErrExists    = errors.New("already exists")
-	ErrExpired   = errors.New("is expired")
-	ErrNotExists = errors.New("does not exist")
+	ErrDuration = errors.New("non-positive duration")
+	ErrExist    = errors.New("already exists")
+	// Deprecated: ErrExists exists for historical compatibility and will be
+	// removed in a future version. Use [ErrExist] instead, which follows the
+	// standard library naming convention (e.g. [os.ErrExist]).
+	ErrExists   = ErrExist
+	ErrExpired  = errors.New("is expired")
+	ErrNotExist = errors.New("does not exist")
+	// Deprecated: ErrNotExists exists for historical compatibility and will be
+	// removed in a future version. Use [ErrNotExist] instead, which follows the
+	// standard library naming convention (e.g. [os.ErrNotExist]).
+	ErrNotExists = ErrNotExist
 	ErrMaxSize   = errors.New("max size limit")
 	ErrMaxLength = errors.New("max data limit")
 	ErrNotInt    = errors.New("data type is not integer")
@@ -202,7 +210,7 @@ func (c *Cache[T]) Get(k string) (T, error) {
 	u, ok := c.getUnit(k)
 	switch {
 	case !ok:
-		return *new(T), &unitError{k, ErrNotExists}
+		return *new(T), &unitError{k, ErrNotExist}
 	case u.expired():
 		return u.Data, &unitError{k, ErrExpired}
 	default:
@@ -333,7 +341,7 @@ func (c *Cache[T]) Add(k string, a T, opts ...unitOptFn[T]) error {
 func (c *Cache[T]) Replace(k string, a T) error {
 	u, ok := c.getUnit(k)
 	if !ok {
-		return &unitError{k, ErrNotExists}
+		return &unitError{k, ErrNotExist}
 	}
 
 	if u.expired() {
@@ -353,7 +361,7 @@ func (c *Cache[T]) Replace(k string, a T) error {
 func (c *Cache[T]) Rename(oldKey, newKey string) error {
 	u, ok := c.getUnit(oldKey)
 	if !ok {
-		return &unitError{oldKey, ErrNotExists}
+		return &unitError{oldKey, ErrNotExist}
 	}
 
 	if u.expired() {
@@ -520,7 +528,7 @@ func (c *Cache[T]) Size() uint64 {
 func (c *Cache[T]) Revive(k string) error {
 	u, ok := c.getUnit(k)
 	if !ok {
-		return &unitError{k, ErrNotExists}
+		return &unitError{k, ErrNotExist}
 	}
 
 	c.Lock()
@@ -534,7 +542,7 @@ func (c *Cache[T]) Revive(k string) error {
 func (c *Cache[T]) ReviveUntil(k string, lt uint64) error {
 	u, ok := c.getUnit(k)
 	if !ok {
-		return &unitError{k, ErrNotExists}
+		return &unitError{k, ErrNotExist}
 	}
 
 	c.Lock()
@@ -556,7 +564,7 @@ func Increment[T Integer](c *Cache[T], k string, n T) (T, error) {
 
 	u, ok := c.getUnit(k)
 	if !ok {
-		return i, &unitError{k, ErrNotExists}
+		return i, &unitError{k, ErrNotExist}
 	}
 
 	if u.expired() {
@@ -578,7 +586,7 @@ func Decrement[T Integer](c *Cache[T], k string, n T) (T, error) {
 
 	u, ok := c.getUnit(k)
 	if !ok {
-		return i, &unitError{k, ErrNotExists}
+		return i, &unitError{k, ErrNotExist}
 	}
 
 	if u.expired() {
