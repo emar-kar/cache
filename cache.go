@@ -62,7 +62,7 @@ func (ue *unitError) Error() string {
 func (ue *unitError) Unwrap() error { return ue.err }
 
 type Cache[T any] struct {
-	mu sync.RWMutex
+	sync.RWMutex
 
 	units map[string]unit[T]
 	size  uint64
@@ -91,23 +91,23 @@ func New[T any](opts ...cacheOptFn) *Cache[T] {
 // until janitor is unlocked if it is in cleaning progress.
 func (c *Cache[T]) StopCleaning() {
 	if c.j != nil {
-		c.mu.Lock()
+		c.Lock()
 		c.j.fireJanitor()
 		c.j = nil
-		c.mu.Unlock()
+		c.Unlock()
 	}
 }
 
 // OrderCleaning stops current janitor if it was set and starts a new one with
 // cache default cleanup interval.
 func (c *Cache[T]) OrderCleaning() {
-	c.mu.Lock()
+	c.Lock()
 	if c.j != nil {
 		c.j.fireJanitor()
 	}
 
 	c.j = hireJanitor(c.opts.cleanupInterval)
-	c.mu.Unlock()
+	c.Unlock()
 
 	go c.inviteJanitor()
 }
@@ -119,7 +119,7 @@ func (c *Cache[T]) RescheduleCleaning(d time.Duration) error {
 		return ErrDuration
 	}
 
-	c.mu.Lock()
+	c.Lock()
 	c.opts.cleanupInterval = d
 
 	if c.j != nil {
@@ -127,37 +127,37 @@ func (c *Cache[T]) RescheduleCleaning(d time.Duration) error {
 	}
 
 	c.j = hireJanitor(c.opts.cleanupInterval)
-	c.mu.Unlock()
+	c.Unlock()
 
 	go c.inviteJanitor()
 
 	return nil
 }
 
-// ChangeJanitorOnEviction updates cache default options with new janitor expiried
+// ChangeJanitorOnEviction updates cache default options with new janitor expired
 // keys removal behavior. Allows to control if janitor should apply on eviction function
 // even if it was set. Restart janitor if it's currently running.
 func (c *Cache[T]) ChangeJanitorOnEviction(b bool) {
 	c.StopCleaning()
-	c.mu.Lock()
+	c.Lock()
 	c.opts.janitorWEviction = b
 	c.j = hireJanitor(c.opts.cleanupInterval)
-	c.mu.Unlock()
+	c.Unlock()
 
 	go c.inviteJanitor()
 }
 
 // ChangeMaxSize updates cache default options with new cache max size in bytes.
 func (c *Cache[T]) ChangeMaxSize(i uint64) error {
-	c.mu.Lock()
+	c.Lock()
 
 	if c.size > i {
-		c.mu.Unlock()
+		c.Unlock()
 		return ErrMaxSize
 	}
 
 	c.opts.maxSize = i
-	c.mu.Unlock()
+	c.Unlock()
 
 	return nil
 }
@@ -165,15 +165,15 @@ func (c *Cache[T]) ChangeMaxSize(i uint64) error {
 // ChangeMaxLength updates cache default options with new max number of keys.
 // Returns [ErrMaxLength] if new value is lower than number of keys already in cache.
 func (c *Cache[T]) ChangeMaxLength(ml uint64) error {
-	c.mu.Lock()
+	c.Lock()
 
 	if len(c.units) > int(ml) {
-		c.mu.Unlock()
+		c.Unlock()
 		return ErrMaxLength
 	}
 
 	c.opts.maxLength = ml
-	c.mu.Unlock()
+	c.Unlock()
 
 	return nil
 }
@@ -181,38 +181,38 @@ func (c *Cache[T]) ChangeMaxLength(ml uint64) error {
 // ChangeDefaultLifeTime updates cache default options with new default lifetime for key.
 // Does not affect keys already in cache.
 func (c *Cache[T]) ChangeDefaultLifeTime(lt uint64) {
-	c.mu.Lock()
+	c.Lock()
 	c.opts.defaultLifetime = lt
-	c.mu.Unlock()
+	c.Unlock()
 }
 
 // ChangeSizeFn updates cache default options with new function to define data size.
 // Does not affect keys already in cache.
-func (c *Cache[T]) ChangeSizeFn(fn func(string, any) (uint64, error)) {
-	c.mu.Lock()
+func (c *Cache[T]) ChangeSizeFn(fn func(string, T) (uint64, error)) {
+	c.Lock()
 	c.opts.getDataSize = fn
-	c.mu.Unlock()
+	c.Unlock()
 }
 
 // ChangeOnEvictionFn updates cache default options with new function
 // which runs when key is being cleaned after expiration.
 // If janitor is cleaning cache, this function will wait until it
 // finishes, before changing on eviction function.
-func (c *Cache[T]) ChangeOnEvictionFn(fn func(string, any)) {
+func (c *Cache[T]) ChangeOnEvictionFn(fn func(string, T)) {
 	c.StopCleaning()
-	c.mu.Lock()
+	c.Lock()
 	c.opts.onEviction = fn
 	c.j = hireJanitor(c.opts.cleanupInterval)
-	c.mu.Unlock()
+	c.Unlock()
 
 	go c.inviteJanitor()
 }
 
 // ChangeDisplacementPolicy updates cache options with new displacement.
 func (c *Cache[T]) ChangeDisplacementPolicy(v bool) {
-	c.mu.Lock()
+	c.Lock()
 	c.opts.displacement = v
-	c.mu.Unlock()
+	c.Unlock()
 }
 
 // Get returns data of the given key. If key does not exist then
@@ -231,14 +231,14 @@ func (c *Cache[T]) Get(k string) (T, error) {
 }
 
 func (c *Cache[T]) getUnit(k string) (unit[T], bool) {
-	c.mu.RLock()
+	c.RLock()
 	u, ok := c.units[k]
-	c.mu.RUnlock()
+	c.RUnlock()
 
 	return u, ok
 }
 
-// deleteOneRnd takes first random key from the underlaying map.
+// deleteOneRnd takes first random key from the underlying map.
 func (c *Cache[T]) deleteOneRnd() {
 	for k, u := range c.units {
 		c.delete(k, u)
@@ -281,7 +281,7 @@ func (c *Cache[T]) ScanFunc(fn func(string) bool) map[string]T {
 // Set saves data in cache with given key and options.
 // If key already exists, it will be removed before adding new value.
 func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
-	c.mu.Lock()
+	c.Lock()
 
 	ou, ok := c.units[k]
 	if ok {
@@ -291,7 +291,7 @@ func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
 	if !ok && c.opts.maxLength != 0 {
 		if len(c.units)+1 > int(c.opts.maxLength) {
 			if !c.opts.displacement {
-				c.mu.Unlock()
+				c.Unlock()
 				return ErrMaxLength
 			}
 
@@ -312,7 +312,7 @@ func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
 		if u.Size == 0 {
 			s, err := c.opts.getDataSize(k, a)
 			if err != nil {
-				c.mu.Unlock()
+				c.Unlock()
 				return &unitError{k, err}
 			}
 
@@ -321,7 +321,7 @@ func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
 
 		if c.size+u.Size > c.opts.maxSize {
 			if !c.opts.displacement {
-				c.mu.Unlock()
+				c.Unlock()
 				return ErrMaxSize
 			}
 
@@ -334,7 +334,7 @@ func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
 	}
 
 	c.units[k] = u
-	c.mu.Unlock()
+	c.Unlock()
 
 	return nil
 }
@@ -360,10 +360,10 @@ func (c *Cache[T]) Replace(k string, a T) error {
 		return &unitError{k, ErrExpired}
 	}
 
-	c.mu.Lock()
+	c.Lock()
 	u.Data = a
 	c.units[k] = u
-	c.mu.Unlock()
+	c.Unlock()
 
 	return nil
 }
@@ -380,10 +380,10 @@ func (c *Cache[T]) Rename(oldKey, newKey string) error {
 		return &unitError{oldKey, ErrExpired}
 	}
 
-	c.mu.Lock()
+	c.Lock()
 	c.units[newKey] = u
 	c.delete(oldKey, u)
-	c.mu.Unlock()
+	c.Unlock()
 
 	return nil
 }
@@ -400,28 +400,28 @@ func (c *Cache[T]) Remove(k string) {
 		c.size -= u.Size
 	}
 
-	c.mu.Lock()
+	c.Lock()
 	delete(c.units, k)
-	c.mu.Unlock()
+	c.Unlock()
 }
 
 // RemoveAll removes all keys from cache.
 // Does not apply on eviction function even if it was set.
 // Runs GC to collect released memory.
 func (c *Cache[T]) RemoveAll() {
-	c.mu.Lock()
+	c.Lock()
 	clear(c.units)
 	c.size = 0
-	c.mu.Unlock()
+	c.Unlock()
 	runtime.GC()
 }
 
 // RemoveExpired removes only expired keys. Does not apply on eviction
 // function even if it was set.
 func (c *Cache[T]) RemoveExpired() {
-	c.mu.Lock()
+	c.Lock()
 	if len(c.units) == 0 {
-		c.mu.Unlock()
+		c.Unlock()
 		return
 	}
 
@@ -434,23 +434,23 @@ func (c *Cache[T]) RemoveExpired() {
 			delete(c.units, k)
 		}
 	}
-	c.mu.Unlock()
+	c.Unlock()
 }
 
 // Delete removes key with given name from cache. Do nothing if key
 // does not exist. Applies on eviction function if it was set.
 func (c *Cache[T]) Delete(k string) {
 	if u, ok := c.getUnit(k); ok {
-		c.mu.Lock()
+		c.Lock()
 		c.delete(k, u)
-		c.mu.Unlock()
+		c.Unlock()
 	}
 }
 
 // DeleteAll removes all keys from cache applying on eviction function
 // if it was set.
 func (c *Cache[T]) DeleteAll() {
-	c.mu.Lock()
+	c.Lock()
 
 	for k, u := range c.units {
 		if c.opts.onEviction != nil {
@@ -460,15 +460,15 @@ func (c *Cache[T]) DeleteAll() {
 
 	clear(c.units)
 	c.size = 0
-	c.mu.Unlock()
+	c.Unlock()
 }
 
 // DeleteExpired removes only expired keys applying on eviction function
 // if it was set.
 func (c *Cache[T]) DeleteExpired() {
-	c.mu.Lock()
+	c.Lock()
 	if len(c.units) == 0 {
-		c.mu.Unlock()
+		c.Unlock()
 		return
 	}
 
@@ -485,12 +485,12 @@ func (c *Cache[T]) DeleteExpired() {
 			}
 		}
 	}
-	c.mu.Unlock()
+	c.Unlock()
 }
 
 // Alive creates copy of the cache with not expired keys data.
 func (c *Cache[T]) Alive() map[string]T {
-	c.mu.Lock()
+	c.Lock()
 
 	m := make(map[string]T, len(c.units))
 
@@ -500,14 +500,14 @@ func (c *Cache[T]) Alive() map[string]T {
 		}
 	}
 
-	c.mu.Unlock()
+	c.Unlock()
 
 	return m
 }
 
 // Snapshot creates copy of the cache with all keys data.
 func (c *Cache[T]) Snapshot() map[string]T {
-	c.mu.Lock()
+	c.Lock()
 
 	m := make(map[string]T, len(c.units))
 
@@ -515,23 +515,23 @@ func (c *Cache[T]) Snapshot() map[string]T {
 		m[k] = u.Data
 	}
 
-	c.mu.Unlock()
+	c.Unlock()
 
 	return m
 }
 
 // Length returns number of keys in cache.
 func (c *Cache[T]) Length() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.Lock()
+	defer c.Unlock()
 
 	return len(c.units)
 }
 
 // Size returns current size of the cache in bytes.
 func (c *Cache[T]) Size() uint64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.Lock()
+	defer c.Unlock()
 
 	return c.size
 }
@@ -543,9 +543,9 @@ func (c *Cache[T]) Revive(k string) error {
 		return &unitError{k, ErrNotExists}
 	}
 
-	c.mu.Lock()
+	c.Lock()
 	c.units[k] = u.revive(c.opts.defaultLifetime)
-	c.mu.Unlock()
+	c.Unlock()
 
 	return nil
 }
@@ -557,9 +557,9 @@ func (c *Cache[T]) ReviveUntil(k string, lt uint64) error {
 		return &unitError{k, ErrNotExists}
 	}
 
-	c.mu.Lock()
+	c.Lock()
 	c.units[k] = u.revive(lt)
-	c.mu.Unlock()
+	c.Unlock()
 
 	return nil
 }
@@ -582,20 +582,13 @@ func Increment[T Integer](c *Cache[T], k string, n T) (T, error) {
 	if u.expired() {
 		return i, &unitError{k, ErrExpired}
 	}
+	u.Data += n
 
-	i, ok = any(u.Data).(T)
-	if !ok {
-		return i, fmt.Errorf("%w; got type %T", &unitError{k, ErrNotInt}, i)
-	}
-
-	i += n
-	u.Data = i
-
-	c.mu.Lock()
+	c.Lock()
 	c.units[k] = u
-	c.mu.Unlock()
+	c.Unlock()
 
-	return i, nil
+	return u.Data, nil
 }
 
 // Decrement decrements data of the given key with n. Returns error if key
@@ -612,25 +605,19 @@ func Decrement[T Integer](c *Cache[T], k string, n T) (T, error) {
 		return i, &unitError{k, ErrExpired}
 	}
 
-	i, ok = any(u.Data).(T)
-	if !ok {
-		return i, fmt.Errorf("%w; got type %T", &unitError{k, ErrNotInt}, i)
-	}
+	u.Data -= n
 
-	i -= n
-	u.Data = i
-
-	c.mu.Lock()
+	c.Lock()
 	c.units[k] = u
-	c.mu.Unlock()
+	c.Unlock()
 
-	return i, nil
+	return u.Data, nil
 }
 
 // Save dumps cache into the given [io.Writer] with json marshaller.
 func (c *Cache[T]) Save(w io.Writer) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.Lock()
+	defer c.Unlock()
 
 	data, err := json.MarshalIndent(c.units, "", "  ")
 	if err != nil {
@@ -655,13 +642,13 @@ func (c *Cache[T]) Load(r io.Reader) error {
 		return err
 	}
 
-	c.mu.Lock()
+	c.Lock()
 
 	for k, u := range data {
 		c.units[k] = u
 	}
 
-	c.mu.Unlock()
+	c.Unlock()
 
 	return nil
 }
@@ -678,7 +665,7 @@ type Stats struct {
 
 // Stats gets current cache state.
 func (c *Cache[T]) Stats() *Stats {
-	c.mu.Lock()
+	c.Lock()
 	s := &Stats{
 		c.opts.cleanupInterval,
 		c.opts.defaultLifetime,
@@ -687,7 +674,7 @@ func (c *Cache[T]) Stats() *Stats {
 		c.opts.maxSize,
 		c.size,
 	}
-	c.mu.Unlock()
+	c.Unlock()
 
 	return s
 }
