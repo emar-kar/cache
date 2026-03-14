@@ -9,7 +9,7 @@ type options[K comparable, T any] struct {
 	getDataSize      func(K, T) uint64
 	onEviction       func(K, T)
 	cleanupInterval  time.Duration
-	defaultLifetime  uint64
+	defaultLifetime  time.Duration
 	maxLength        uint64
 	maxSize          uint64
 	displacement     bool
@@ -42,9 +42,20 @@ func WithDisplacement[K comparable, T any](co *options[K, T]) {
 	co.displacement = true
 }
 
-// WithDefaultLifetime sets default lifetime for key in cache.
+// WithDefaultLifetime sets default lifetime for keys in cache.
+//
+// Deprecated: WithDefaultLifetime exists for historical compatibility and will
+// be removed in a future version. Use [WithDefaultTTL] instead, which accepts
+// a [time.Duration] directly.
 func WithDefaultLifetime[K comparable, T any](lt uint64) cacheOptFn[K, T] {
-	return func(co *options[K, T]) { co.defaultLifetime = lt }
+	return func(co *options[K, T]) { co.defaultLifetime = time.Duration(lt) }
+}
+
+// WithDefaultTTL sets the default time-to-live for keys in cache.
+// Keys set without an explicit [WithTTL] option will expire after this duration.
+// A value of 0 means keys never expire.
+func WithDefaultTTL[K comparable, T any](d time.Duration) cacheOptFn[K, T] {
+	return func(co *options[K, T]) { co.defaultLifetime = d }
 }
 
 // WithCleanupInteval sets interval for janitor to clean expired keys.
@@ -100,9 +111,22 @@ func WithSizeFn[K comparable, T any](fn func(K, T) uint64) cacheOptFn[K, T] {
 type unitOptFn[T any] func(unit[T]) unit[T]
 
 // WithLifetime sets custom lifetime for cache key.
+//
+// Deprecated: WithLifetime exists for historical compatibility and will be
+// removed in a future version. Use [WithTTL] instead, which accepts a
+// [time.Duration] directly.
 func WithLifetime[T any](lt uint64) unitOptFn[T] {
 	return func(u unit[T]) unit[T] {
-		u.Exp = lt
+		u.Exp = time.Duration(lt)
+		return u
+	}
+}
+
+// WithTTL sets a custom time-to-live for a single cache key, overriding the
+// cache default. A value of 0 means the key never expires.
+func WithTTL[T any](d time.Duration) unitOptFn[T] {
+	return func(u unit[T]) unit[T] {
+		u.Exp = d
 		return u
 	}
 }

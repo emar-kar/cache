@@ -10,22 +10,22 @@ import (
 type unit[T any] struct {
 	Data T `json:"data"`
 
-	Exp  uint64 `json:"exp,omitempty"`
-	Size uint64 `json:"size,omitempty"`
+	Exp  time.Duration `json:"exp,omitempty"`
+	Size uint64        `json:"size,omitempty"`
 }
 
 // revive returns a copy of the unit with its expiration time extended by lt
 // nanoseconds from now, measured against the monotonic clock anchored at
 // runtimeStart.
-func (u unit[T]) revive(lt uint64) unit[T] {
-	u.Exp = uint64(time.Since(runtimeStart).Nanoseconds()) + lt
+func (u unit[T]) revive(lt time.Duration) unit[T] {
+	u.Exp = time.Since(runtimeStart) + lt
 	return u
 }
 
 // expired reports whether the unit has passed its expiration time.
 // Units with Exp == 0 never expire.
 func (u *unit[T]) expired() bool {
-	return u.Exp != 0 && time.Since(runtimeStart).Nanoseconds() >= int64(u.Exp)
+	return u.Exp != 0 && time.Since(runtimeStart) >= u.Exp
 }
 
 // unitError wraps a cache operation error together with the key that caused it,

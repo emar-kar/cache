@@ -138,9 +138,19 @@ func (c *Cache[K, T]) ChangeMaxLength(ml uint64) error {
 
 // ChangeDefaultLifeTime updates cache default options with new default lifetime for key.
 // Does not affect keys already in cache.
+//
+// Deprecated: ChangeDefaultLifeTime exists for historical compatibility and will
+// be removed in a future version. Use [Cache.ChangeDefaultTTL] instead, which
+// accepts a [time.Duration] directly.
 func (c *Cache[K, T]) ChangeDefaultLifeTime(lt uint64) {
+	c.ChangeDefaultTTL(time.Duration(lt))
+}
+
+// ChangeDefaultTTL updates the default time-to-live for new keys.
+// Does not affect keys already in cache.
+func (c *Cache[K, T]) ChangeDefaultTTL(d time.Duration) {
 	c.Lock()
-	c.opts.defaultLifetime = lt
+	c.opts.defaultLifetime = d
 	c.Unlock()
 }
 
@@ -522,14 +532,23 @@ func (c *Cache[K, T]) Revive(k K) error {
 }
 
 // ReviveUntil prolongs lifetime of the key with specified value.
+//
+// Deprecated: ReviveUntil exists for historical compatibility and will be
+// removed in a future version. Use [Cache.ReviveFor] instead, which accepts
+// a [time.Duration] directly.
 func (c *Cache[K, T]) ReviveUntil(k K, lt uint64) error {
+	return c.ReviveFor(k, time.Duration(lt))
+}
+
+// ReviveFor prolongs lifetime of the key by the given duration.
+func (c *Cache[K, T]) ReviveFor(k K, d time.Duration) error {
 	u, ok := c.getUnit(k)
 	if !ok {
 		return &unitError[K]{k, ErrNotExist}
 	}
 
 	c.Lock()
-	c.units[k] = u.revive(lt)
+	c.units[k] = u.revive(d)
 	c.Unlock()
 
 	return nil
@@ -627,11 +646,11 @@ func (c *Cache[K, T]) Load(r io.Reader) error {
 // Stats represents current cache statistics.
 type Stats struct {
 	CleanupInterval time.Duration
-	DefaultLifetime uint64
-	CurrentLength   int
+	DefaultLifetime time.Duration
 	MaxLength       uint64
 	MaxSize         uint64
 	CurrentSize     uint64
+	CurrentLength   int
 }
 
 // Stats gets current cache state.
@@ -640,10 +659,10 @@ func (c *Cache[K, T]) Stats() *Stats {
 	s := &Stats{
 		c.opts.cleanupInterval,
 		c.opts.defaultLifetime,
-		len(c.units),
 		c.opts.maxLength,
 		c.opts.maxSize,
 		c.size,
+		len(c.units),
 	}
 	c.Unlock()
 
