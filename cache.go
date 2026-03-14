@@ -270,7 +270,26 @@ func (c *Cache[T]) ScanFunc(fn func(string) bool) map[string]T {
 // If key already exists, it will be removed before adding new value.
 func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
 	c.Lock()
+	defer c.Unlock()
 
+	return c.set(k, a, opts...)
+}
+
+// Add sets data in cache only if given key does not exist.
+func (c *Cache[T]) Add(k string, a T, opts ...unitOptFn[T]) error {
+	c.Lock()
+	defer c.Unlock()
+
+	if _, ok := c.units[k]; ok {
+		return &unitError{k, ErrExist}
+	}
+
+	return c.set(k, a, opts...)
+}
+
+// set is the internal implementation of Set. It must only be called
+// with the write lock already held.
+func (c *Cache[T]) set(k string, a T, opts ...unitOptFn[T]) error {
 	ou, ok := c.units[k]
 	if ok {
 		c.delete(k, ou)
@@ -279,7 +298,6 @@ func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
 	if !ok && c.opts.maxLength != 0 {
 		if len(c.units)+1 > int(c.opts.maxLength) {
 			if !c.opts.displacement {
-				c.Unlock()
 				return ErrMaxLength
 			}
 
@@ -300,7 +318,6 @@ func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
 		if u.Size == 0 {
 			s, err := c.opts.getDataSize(k, a)
 			if err != nil {
-				c.Unlock()
 				return &unitError{k, err}
 			}
 
@@ -309,7 +326,6 @@ func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
 
 		if c.size+u.Size > c.opts.maxSize {
 			if !c.opts.displacement {
-				c.Unlock()
 				return ErrMaxSize
 			}
 
@@ -322,18 +338,8 @@ func (c *Cache[T]) Set(k string, a T, opts ...unitOptFn[T]) error {
 	}
 
 	c.units[k] = u
-	c.Unlock()
 
 	return nil
-}
-
-// Add sets data in cache only if given key does not exist.
-func (c *Cache[T]) Add(k string, a T, opts ...unitOptFn[T]) error {
-	if _, ok := c.getUnit(k); ok {
-		return &unitError{k, ErrExists}
-	}
-
-	return c.Set(k, a, opts...)
 }
 
 // Replace replaces data of the given key only if this key exists in cache
