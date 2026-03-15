@@ -134,8 +134,8 @@ func (c *Cache[K, T]) ChangeMaxSize(i uint64) error {
 				return ErrMaxSize
 			}
 			newSize += e.Size
-			}
 		}
+	}
 
 	c.opts.maxSize = i
 	c.size = newSize
@@ -266,14 +266,14 @@ func (c *Cache[K, T]) deleteOneRnd() {
 // clean removes entry k from the cache, adjusts the size counter, and fires
 // the eviction callback if one has been configured. Must be called with the
 // write lock held.
-func (c *Cache[K, T]) clean(k K, u entry[T]) {
+func (c *Cache[K, T]) clean(k K, e entry[T]) {
 	delete(c.entries, k)
 	if c.opts.maxSize != 0 {
-		c.size -= u.Size
+		c.size -= e.Size
 	}
 
 	if c.opts.onEviction != nil {
-		c.opts.onEviction(k, u.Data)
+		c.opts.onEviction(k, e.Data)
 	}
 }
 
@@ -523,7 +523,7 @@ func (c *Cache[K, T]) RemoveExpired() {
 // Delete removes key with given name from cache. Do nothing if key
 // does not exist. Applies on eviction function if it was set.
 func (c *Cache[K, T]) Delete(k K) {
-		c.Lock()
+	c.Lock()
 	defer c.Unlock()
 
 	e, ok := c.entries[k]
@@ -642,7 +642,7 @@ func (c *Cache[K, T]) Revive(k K) error {
 		e.revive(c.opts.defaultLifetime)
 		c.entries[k] = e
 
-	return nil
+		return nil
 	}
 
 	return &entryError[K]{k, ErrNotExist}
@@ -667,7 +667,7 @@ func (c *Cache[K, T]) ReviveFor(k K, d time.Duration) error {
 		e.revive(d)
 		c.entries[k] = e
 
-	return nil
+		return nil
 	}
 
 	return &entryError[K]{k, ErrNotExist}
@@ -783,8 +783,8 @@ func (c *Cache[K, T]) Load(r io.Reader) error {
 	c.Lock()
 	defer c.Unlock()
 
-	for k, u := range data {
-		if err := c.set(k, u.Data, WithSize[T](u.Size)); err != nil {
+	for k, e := range data {
+		if err := c.set(k, e.Data, WithSize[T](e.Size)); err != nil {
 			return err
 		}
 	}
