@@ -395,23 +395,27 @@ func (c *Cache[K, T]) set(k K, v T, opts ...entryOption[T]) error {
 }
 
 // verifySize enforces the maxSize constraint before a new entry is stored.
-// Skipped entirely when maxSize is 0 or u.Size is 0 (unknown size).
+// Skipped entirely when maxSize is 0 or e.Size is 0 (unknown size).
 // When displacement is on, random entries are evicted until there is room;
 // otherwise [ErrMaxSize] is returned. Increments c.size on success.
 // Must be called with the write lock held.
-func (c *Cache[K, T]) verifySize(u *entry[T]) error {
-	if c.opts.maxSize != 0 && u.Size != 0 {
-		if c.size+u.Size > c.opts.maxSize {
+func (c *Cache[K, T]) verifySize(e *entry[T]) error {
+	if c.opts.maxSize != 0 && e.Size != 0 {
+		if e.Size > c.opts.maxSize {
+			return ErrMaxSize
+		}
+
+		if c.size+e.Size > c.opts.maxSize {
 			if !c.opts.displacement {
 				return ErrMaxSize
 			}
 
-			for c.size+u.Size > c.opts.maxSize {
+			for c.size+e.Size > c.opts.maxSize {
 				c.deleteOneRnd()
 			}
 		}
 
-		c.size += u.Size
+		c.size += e.Size
 	}
 
 	return nil
