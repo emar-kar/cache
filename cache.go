@@ -107,13 +107,13 @@ func (c *Cache[K, T]) ChangeJanitorOnEviction(b bool) {
 
 }
 
-// ChangeMaxSize updates the maximum cache size in bytes. Rebuilds the
-// internal size counter from scratch so that calls switching from an
-// unlimited cache (maxSize == 0) to a limited one are handled correctly.
-// If the tracked size already exceeds i, or if re-accumulation during the
-// rebuild would exceed i and displacement is off, [ErrMaxSize] is returned.
-// When displacement is on, entries are evicted until the budget allows the
-// new limit to be applied.
+// ChangeMaxSize updates the maximum cache size in bytes.
+// Returns [ErrMaxSize] if the current total size of tracked entries already
+// exceeds i. Displacement is not applied; shrink the cache manually before
+// calling if needed. Setting i to 0 disables the size limit.
+// If i is non-zero, the tracked size counter is rebuilt from entries with
+// known sizes; entries inserted without an explicit size or a configured size
+// function will not be counted until they are next updated.
 func (c *Cache[K, T]) ChangeMaxSize(i uint64) error {
 	c.Lock()
 	defer c.Unlock()
@@ -122,16 +122,23 @@ func (c *Cache[K, T]) ChangeMaxSize(i uint64) error {
 		return ErrMaxSize
 	}
 
-	c.opts.maxSize = i
-	c.size = 0
-
-	if c.opts.maxSize != 0 {
-		for _, u := range c.units {
-			if err := c.verifySize(&u); err != nil {
-				return err
+	// Speculatively accumulate the new size counter without touching any
+	// cache state, so a failure leaves c.size and c.opts.maxSize unchanged.
+	var newSize uint64
+	if i != 0 {
+		for _, e := range c.entries {
+			if e.Size == 0 {
+				continue
+			}
+			if newSize+e.Size > i {
+				return ErrMaxSize
+			}
+			newSize += e.Size
 			}
 		}
-	}
+
+	c.opts.maxSize = i
+	c.size = newSize
 
 	return nil
 }
