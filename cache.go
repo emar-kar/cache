@@ -683,21 +683,22 @@ type Integer interface {
 func Increment[K comparable, T Integer](c *Cache[K, T], k K, n T) (T, error) {
 	var i T
 
-	u, ok := c.getUnit(k)
-	if !ok {
-		return i, &unitError[K]{k, ErrNotExist}
-	}
-
-	if u.expired() {
-		return i, &unitError[K]{k, ErrExpired}
-	}
-	u.Data += n
-
 	c.Lock()
-	c.units[k] = u
-	c.Unlock()
+	defer c.Unlock()
 
-	return u.Data, nil
+	e, ok := c.entries[k]
+	if !ok {
+		return i, &entryError[K]{k, ErrNotExist}
+	}
+
+	if e.expired() {
+		return i, &entryError[K]{k, ErrExpired}
+	}
+
+	e.Data += n
+	c.entries[k] = e
+
+	return e.Data, nil
 }
 
 // Decrement decrements data of the given key with n. Returns error if key
@@ -705,22 +706,22 @@ func Increment[K comparable, T Integer](c *Cache[K, T], k K, n T) (T, error) {
 func Decrement[K comparable, T Integer](c *Cache[K, T], k K, n T) (T, error) {
 	var i T
 
-	u, ok := c.getUnit(k)
-	if !ok {
-		return i, &unitError[K]{k, ErrNotExist}
-	}
-
-	if u.expired() {
-		return i, &unitError[K]{k, ErrExpired}
-	}
-
-	u.Data -= n
-
 	c.Lock()
-	c.units[k] = u
-	c.Unlock()
+	defer c.Unlock()
 
-	return u.Data, nil
+	e, ok := c.entries[k]
+	if !ok {
+		return i, &entryError[K]{k, ErrNotExist}
+	}
+
+	if e.expired() {
+		return i, &entryError[K]{k, ErrExpired}
+	}
+
+	e.Data -= n
+	c.entries[k] = e
+
+	return e.Data, nil
 }
 
 // Save serialises the current cache contents to w as indented JSON.
