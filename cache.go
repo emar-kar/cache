@@ -284,13 +284,14 @@ func (c *Cache[K, T]) clean(k K, u entry[T]) {
 // Deprecated: use [Cache.ScanFunc].
 func (c *Cache[K, T]) Scan(_ K) map[K]T { return nil }
 
-// ScanFunc scans current [Snapshot] of the cache and returns key-value map
-// if given func returns true for a key.
+// ScanFunc returns all live (non-expired) entries for which fn returns true.
+// Expired entries that have not yet been cleaned are excluded; use
+// [Cache.Snapshot] if you need to inspect the full internal state.
 func (c *Cache[K, T]) ScanFunc(fn func(K) bool) map[K]T {
-	snap := c.Snapshot()
+	alive := c.Alive()
 	res := make(map[K]T, 0)
 
-	for k, v := range snap {
+	for k, v := range alive {
 		if fn(k) {
 			res[k] = v
 		}
