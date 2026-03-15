@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// unit is the internal representation of a single cache entry. It stores the
+// entry is the internal representation of a single cache entry. It stores the
 // user-provided data alongside expiration and size metadata.
-type unit[T any] struct {
+type entry[T any] struct {
 	Data T `json:"data"`
 
 	Exp  time.Duration `json:"exp,omitempty"`
@@ -16,8 +16,8 @@ type unit[T any] struct {
 
 // revive sets the expiration time to time.Since(runtimeStart) + lt, anchoring
 // the expiry to the monotonic clock so it is unaffected by wall-clock adjustments.
-// If lt is 0 the unit is left unchanged (no-op).
-func (u *unit[T]) revive(lt time.Duration) {
+// If lt is 0 the entry is left unchanged (no-op).
+func (u *entry[T]) revive(lt time.Duration) {
 	if lt == 0 {
 		return
 	}
@@ -25,23 +25,23 @@ func (u *unit[T]) revive(lt time.Duration) {
 	u.Exp = time.Since(runtimeStart) + lt
 }
 
-// expired reports whether the unit has passed its expiration time using
+// expired reports whether the entry has passed its expiration time using
 // the monotonic clock offset from runtimeStart. Units with Exp == 0 never
 // expire (they were created without a TTL).
-func (u *unit[T]) expired() bool {
+func (u *entry[T]) expired() bool {
 	return u.Exp != 0 && time.Since(runtimeStart) >= u.Exp
 }
 
-// unitError wraps a cache operation error together with the key that caused it,
+// entryError wraps a cache operation error together with the key that caused it,
 // allowing callers to identify which key triggered the error while still using
 // [errors.Is] against the sentinel error values.
-type unitError[K comparable] struct {
+type entryError[K comparable] struct {
 	k   K
 	err error
 }
 
-func (ue *unitError[K]) Error() string {
+func (ue *entryError[K]) Error() string {
 	return fmt.Sprintf("key %q: %s", ue.k, ue.err)
 }
 
-func (ue *unitError[K]) Unwrap() error { return ue.err }
+func (ue *entryError[K]) Unwrap() error { return ue.err }

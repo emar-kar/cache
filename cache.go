@@ -42,10 +42,10 @@ var (
 type Cache[K comparable, T any] struct {
 	sync.RWMutex
 
-	units map[K]unit[T]
-	size  uint64
-	opts  *options[K, T]
-	j     *janitor
+	entries map[K]entry[T]
+	size    uint64
+	opts    *options[K, T]
+	j       *janitor
 }
 
 // New creates new Cache instance with given options.
@@ -55,7 +55,7 @@ func New[K comparable, T any](opts ...option[K, T]) *Cache[K, T] {
 		fn(co)
 	}
 
-	c := &Cache[K, T]{units: make(map[K]unit[T]), opts: co}
+	c := &Cache[K, T]{entries: make(map[K]entry[T]), opts: co}
 	c.hireJanitor()
 
 	return c
@@ -144,7 +144,7 @@ func (c *Cache[K, T]) ChangeMaxLength(ml uint64) error {
 	c.Lock()
 	defer c.Unlock()
 
-	if len(c.units) > int(ml) {
+	if len(c.entries) > int(ml) {
 		return ErrMaxLength
 	}
 
@@ -229,39 +229,38 @@ func (c *Cache[K, T]) ChangeDisplacementPolicy(v bool) {
 }
 
 // Get returns the data stored for k. Returns [ErrNotExist] wrapped in a
-// [unitError] if the key is absent. If the key is present but has passed its
+// [entryError] if the key is absent. If the key is present but has passed its
 // expiration time and has not yet been cleaned, the data is still returned
 // together with [ErrExpired].
 func (c *Cache[K, T]) Get(k K) (T, error) {
-	u, ok := c.getUnit(k)
+	c.RLock()
+	defer c.RUnlock()
+
+	e, ok := c.entries[k]
 	switch {
 	case !ok:
-		return *new(T), &unitError[K]{k, ErrNotExist}
-	case u.expired():
-		return u.Data, &unitError[K]{k, ErrExpired}
+		return *new(T), &entryError[K]{k, ErrNotExist}
+	case e.expired():
+		return e.Data, &entryError[K]{k, ErrExpired}
 	default:
-		return u.Data, nil
+		return e.Data, nil
 	}
 }
 
-func (c *Cache[K, T]) getUnit(k K) (unit[T], bool) {
-	c.RLock()
-	u, ok := c.units[k]
-	c.RUnlock()
-
-	return u, ok
-}
-
-// deleteOneRnd takes a random key from the underlying map and deletes it.
+// deleteOneRnd deletes one arbitrarily-chosen entry from the cache to free
+// space during displacement. The eviction callback fires via [clean] if configured.
 func (c *Cache[K, T]) deleteOneRnd() {
-	for k, u := range c.units {
-		c.delete(k, u)
+	for k, e := range c.entries {
+		c.clean(k, e)
 		return
 	}
 }
 
-func (c *Cache[K, T]) delete(k K, u unit[T]) {
-	delete(c.units, k)
+// clean removes entry k from the cache, adjusts the size counter, and fires
+// the eviction callback if one has been configured. Must be called with the
+// write lock held.
+func (c *Cache[K, T]) clean(k K, u entry[T]) {
+	delete(c.entries, k)
 	if c.opts.maxSize != 0 {
 		c.size -= u.Size
 	}
@@ -293,33 +292,47 @@ func (c *Cache[K, T]) ScanFunc(fn func(K) bool) map[K]T {
 	return res
 }
 
-// Set stores v under k. If k already exists its current entry (including
-// size accounting) is removed first, then the new entry is inserted.
+// Set stores v under k. If k already exists its size is deducted from the
+// size budget and the entry is removed silently (no eviction callback).
+// The new entry is then inserted subject to the usual length and size limits.
+// Use [Cache.Delete] before Set if you need the eviction callback to fire
+// for the old value.
 // Returns [ErrMaxLength] if the cache is full and displacement is disabled,
 // or [ErrMaxSize] if the entry would exceed the size budget and displacement
 // is disabled. When displacement is enabled a random existing entry is
-// evicted to make room.
+// evicted (with callback) to make room.
 func (c *Cache[K, T]) Set(k K, v T, opts ...entryOption[T]) error {
 	c.Lock()
 	defer c.Unlock()
 
-	ou, ok := c.units[k]
-	if ok {
-		c.delete(k, ou)
+	if e, ok := c.entries[k]; ok {
+		delete(c.entries, k)
+		if c.opts.maxSize != 0 {
+			c.size -= e.Size
+		}
 	}
 
 	return c.set(k, v, opts...)
 }
 
-// Add stores v under k only if k does not already exist in the cache.
-// Returns [ErrExist] if k is present. Subject to the same length/size
-// limits as [Cache.Set].
+// Add stores v under k only if k does not hold a live (non-expired) entry.
+// If k exists and is not expired, returns [ErrExist].
+// If k exists but has expired, the stale entry is discarded silently
+// (no eviction callback) and v is inserted in its place.
+// Subject to the same length/size limits as [Cache.Set].
 func (c *Cache[K, T]) Add(k K, v T, opts ...entryOption[T]) error {
 	c.Lock()
 	defer c.Unlock()
 
-	if _, ok := c.units[k]; ok {
-		return &unitError[K]{k, ErrExist}
+	if e, ok := c.entries[k]; ok {
+		if !e.expired() {
+			return &entryError[K]{k, ErrExist}
+		}
+
+		delete(c.entries, k)
+		if c.opts.maxSize != 0 {
+			c.size -= e.Size
+		}
 	}
 
 	return c.set(k, v, opts...)
@@ -348,27 +361,27 @@ func (c *Cache[K, T]) verifyLength() error {
 // when a max-size limit is configured, converts the per-entry lifetime into
 // an absolute monotonic expiry via revive, and then delegates to verifySize
 // before storing the entry.
-func (c *Cache[K, T]) set(k K, a T, opts ...entryOption[T]) error {
+func (c *Cache[K, T]) set(k K, v T, opts ...entryOption[T]) error {
 	if err := c.verifyLength(); err != nil {
 		return err
 	}
 
-	u := unit[T]{Data: a, Exp: c.opts.defaultLifetime}
+	e := entry[T]{Data: v, Exp: c.opts.defaultLifetime}
 	for _, fn := range opts {
-		u = fn(u)
+		e = fn(e)
 	}
 
-	if c.opts.maxSize != 0 && u.Size == 0 {
-		u.Size = c.opts.getDataSize(k, a)
+	if c.opts.maxSize != 0 && e.Size == 0 {
+		e.Size = c.opts.getDataSize(k, v)
 	}
 
-	u.revive(u.Exp)
+	e.revive(e.Exp)
 
-	if err := c.verifySize(&u); err != nil {
+	if err := c.verifySize(&e); err != nil {
 		return err
 	}
 
-	c.units[k] = u
+	c.entries[k] = e
 
 	return nil
 }
@@ -378,7 +391,7 @@ func (c *Cache[K, T]) set(k K, a T, opts ...entryOption[T]) error {
 // When displacement is on, random entries are evicted until there is room;
 // otherwise [ErrMaxSize] is returned. Increments c.size on success.
 // Must be called with the write lock held.
-func (c *Cache[K, T]) verifySize(u *unit[T]) error {
+func (c *Cache[K, T]) verifySize(u *entry[T]) error {
 	if c.opts.maxSize != 0 && u.Size != 0 {
 		if c.size+u.Size > c.opts.maxSize {
 			if !c.opts.displacement {
@@ -459,7 +472,7 @@ func (c *Cache[K, T]) Remove(k K) {
 // Runs GC to collect released memory.
 func (c *Cache[K, T]) RemoveAll() {
 	c.Lock()
-	clear(c.units)
+	clear(c.entries)
 	c.size = 0
 	c.Unlock()
 	runtime.GC()
@@ -471,17 +484,17 @@ func (c *Cache[K, T]) RemoveExpired() {
 	c.Lock()
 	defer c.Unlock()
 
-	if len(c.units) == 0 {
+	if len(c.entries) == 0 {
 		return
 	}
 
-	for k, u := range c.units {
-		if u.expired() {
+	for k, e := range c.entries {
+		if e.expired() {
 			if c.opts.maxSize != 0 {
-				c.size -= u.Size
+				c.size -= e.Size
 			}
 
-			delete(c.units, k)
+			delete(c.entries, k)
 		}
 	}
 }
@@ -489,10 +502,12 @@ func (c *Cache[K, T]) RemoveExpired() {
 // Delete removes key with given name from cache. Do nothing if key
 // does not exist. Applies on eviction function if it was set.
 func (c *Cache[K, T]) Delete(k K) {
-	if u, ok := c.getUnit(k); ok {
 		c.Lock()
-		c.delete(k, u)
-		c.Unlock()
+	defer c.Unlock()
+
+	e, ok := c.entries[k]
+	if ok {
+		c.clean(k, e)
 	}
 }
 
@@ -500,16 +515,16 @@ func (c *Cache[K, T]) Delete(k K) {
 // if it was set.
 func (c *Cache[K, T]) DeleteAll() {
 	c.Lock()
+	defer c.Unlock()
 
-	for k, u := range c.units {
+	for k, e := range c.entries {
 		if c.opts.onEviction != nil {
-			c.opts.onEviction(k, u.Data)
+			c.opts.onEviction(k, e.Data)
 		}
 	}
 
-	clear(c.units)
+	clear(c.entries)
 	c.size = 0
-	c.Unlock()
 }
 
 // DeleteExpired removes only expired keys applying on eviction function
@@ -518,20 +533,20 @@ func (c *Cache[K, T]) DeleteExpired() {
 	c.Lock()
 	defer c.Unlock()
 
-	if len(c.units) == 0 {
+	if len(c.entries) == 0 {
 		return
 	}
 
-	for k, u := range c.units {
-		if u.expired() {
+	for k, e := range c.entries {
+		if e.expired() {
 			if c.opts.maxSize != 0 {
-				c.size -= u.Size
+				c.size -= e.Size
 			}
 
-			delete(c.units, k)
+			delete(c.entries, k)
 
 			if c.opts.onEviction != nil {
-				c.opts.onEviction(k, u.Data)
+				c.opts.onEviction(k, e.Data)
 			}
 		}
 	}
@@ -539,36 +554,34 @@ func (c *Cache[K, T]) DeleteExpired() {
 
 // Alive creates copy of the cache with not expired keys data.
 func (c *Cache[K, T]) Alive() map[K]T {
-	c.Lock()
+	c.RLock()
 
-	m := make(map[K]T, len(c.units))
+	m := make(map[K]T, len(c.entries))
 
-	for k, u := range c.units {
-		if !u.expired() {
-			m[k] = u.Data
+	for k, e := range c.entries {
+		if !e.expired() {
+			m[k] = e.Data
 		}
 	}
 
-	c.Unlock()
+	c.RUnlock()
 
 	return m
 }
 
-// Snapshot returns a shallow copy of all entries as a plain map[K]T,
-// including entries that may be expired but not yet cleaned.
-// For simple data persistence, prefer serialising the snapshot directly
-// over [Cache.Save]: the caller controls the encoder and TTLs are re-applied
-// at insertion time rather than being approximate.
+// Snapshot returns a shallow copy of all entries currently held in the cache,
+// including entries that are expired but have not yet been cleaned by the
+// janitor. Use [Cache.Alive] to get only live (non-expired) entries.
 func (c *Cache[K, T]) Snapshot() map[K]T {
-	c.Lock()
+	c.RLock()
 
-	m := make(map[K]T, len(c.units))
+	m := make(map[K]T, len(c.entries))
 
-	for k, u := range c.units {
-		m[k] = u.Data
+	for k, e := range c.entries {
+		m[k] = e.Data
 	}
 
-	c.Unlock()
+	c.RUnlock()
 
 	return m
 }
@@ -601,17 +614,17 @@ func (c *Cache[K, T]) Size() uint64 {
 // giving the key a fresh lifetime from now. Returns [ErrNotExist] if k
 // is absent. If the default TTL is 0 the key is left unchanged (no-op).
 func (c *Cache[K, T]) Revive(k K) error {
-	u, ok := c.getUnit(k)
-	if !ok {
-		return &unitError[K]{k, ErrNotExist}
-	}
-
 	c.Lock()
-	u.revive(c.opts.defaultLifetime)
-	c.units[k] = u
-	c.Unlock()
+	defer c.Unlock()
+
+	if e, ok := c.entries[k]; ok {
+		e.revive(c.opts.defaultLifetime)
+		c.entries[k] = e
 
 	return nil
+	}
+
+	return &entryError[K]{k, ErrNotExist}
 }
 
 // ReviveUntil prolongs lifetime of the key with specified value.
@@ -624,19 +637,19 @@ func (c *Cache[K, T]) ReviveUntil(k K, lt uint64) error {
 }
 
 // ReviveFor resets the expiry of k to d from now. Returns [ErrNotExist] if k
-// is absent. If d is 0 the key is left unchanged (no-op per [unit.revive]).
+// is absent. If d is 0 the key is left unchanged (no-op per [entry.revive]).
 func (c *Cache[K, T]) ReviveFor(k K, d time.Duration) error {
-	u, ok := c.getUnit(k)
-	if !ok {
-		return &unitError[K]{k, ErrNotExist}
-	}
-
 	c.Lock()
-	u.revive(d)
-	c.units[k] = u
-	c.Unlock()
+	defer c.Unlock()
+
+	if e, ok := c.entries[k]; ok {
+		e.revive(d)
+		c.entries[k] = e
 
 	return nil
+	}
+
+	return &entryError[K]{k, ErrNotExist}
 }
 
 type Integer interface {
@@ -704,10 +717,10 @@ func Decrement[K comparable, T Integer](c *Cache[K, T], k K, n T) (T, error) {
 //     the current process start and is not meaningful across restarts.
 //     See [Cache.Load] for how expiry is handled on restore.
 func (c *Cache[K, T]) Save(w io.Writer) error {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	defer c.RUnlock()
 
-	data, err := json.MarshalIndent(c.units, "", "  ")
+	data, err := json.MarshalIndent(c.entries, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -739,7 +752,7 @@ func (c *Cache[K, T]) Load(r io.Reader) error {
 		return err
 	}
 
-	var data map[K]unit[T]
+	var data map[K]entry[T]
 
 	if err := json.Unmarshal(b, &data); err != nil {
 		return err
@@ -778,6 +791,6 @@ func (c *Cache[K, T]) Stats() *Stats {
 		c.opts.maxLength,
 		c.opts.maxSize,
 		c.size,
-		len(c.units),
+		len(c.entries),
 	}
 }

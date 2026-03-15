@@ -141,7 +141,7 @@ func WithSizeFunc[K comparable, T any](fn func(K, T) uint64) option[K, T] {
 	return func(co *options[K, T]) { co.getDataSize = fn }
 }
 
-type entryOption[T any] func(unit[T]) unit[T]
+type entryOption[T any] func(entry[T]) entry[T]
 
 // WithLifetime sets custom lifetime for cache key.
 //
@@ -149,7 +149,7 @@ type entryOption[T any] func(unit[T]) unit[T]
 // removed in a future version. Use [WithTTL] instead, which accepts a
 // [time.Duration] directly.
 func WithLifetime[T any](lt uint64) entryOption[T] {
-	return func(u unit[T]) unit[T] {
+	return func(u entry[T]) entry[T] {
 		u.Exp = time.Duration(lt)
 		return u
 	}
@@ -159,7 +159,7 @@ func WithLifetime[T any](lt uint64) entryOption[T] {
 // the cache default set by [WithDefaultTTL]. A value of 0 means the key
 // never expires, regardless of the cache default.
 func WithTTL[T any](d time.Duration) entryOption[T] {
-	return func(u unit[T]) unit[T] {
+	return func(u entry[T]) entry[T] {
 		u.Exp = d
 		return u
 	}
@@ -170,7 +170,7 @@ func WithTTL[T any](d time.Duration) entryOption[T] {
 // value directly and skip the size function. Use this when you know the
 // exact memory cost of an entry (e.g. when loading persisted data).
 func WithSize[T any](s uint64) entryOption[T] {
-	return func(u unit[T]) unit[T] {
+	return func(u entry[T]) entry[T] {
 		u.Size = s
 		return u
 	}
