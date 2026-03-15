@@ -41,7 +41,7 @@ type entryError[K comparable] struct {
 }
 
 func (ue *entryError[K]) Error() string {
-	return fmt.Sprintf("key %q: %s", ue.k, ue.err)
+	return fmt.Sprintf("key %v: %s", ue.k, ue.err)
 }
 
 func (ue *entryError[K]) Unwrap() error { return ue.err }
