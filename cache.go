@@ -375,19 +375,24 @@ func (c *Cache[K, T]) set(k K, v T, opts ...entryOption[T]) error {
 	}
 
 	e := entry[T]{Data: v, Exp: c.opts.defaultLifetime}
-	for _, fn := range opts {
-		e = fn(e)
+	if len(opts) > 0 {
+		for _, fn := range opts {
+			e = fn(e)
+		}
 	}
 
-	if c.opts.maxSize != 0 && e.Size == 0 {
-		e.Size = c.opts.getDataSize(k, v)
+	if c.opts.maxSize != 0 {
+		if e.Size == 0 {
+			e.Size = c.opts.getDataSize(k, v)
+		}
+		if e.Size != 0 {
+			if err := c.verifySize(&e); err != nil {
+				return err
+			}
+		}
 	}
 
 	e.revive(e.Exp)
-
-	if err := c.verifySize(&e); err != nil {
-		return err
-	}
 
 	c.entries[k] = e
 
