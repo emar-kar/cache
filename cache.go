@@ -797,27 +797,29 @@ func (c *Cache[K, T]) Load(r io.Reader) error {
 	return nil
 }
 
-// Stats represents current cache statistics.
+// Stats represents a snapshot of the current cache state.
+// All fields are exported with JSON tags and serialize naturally
+// via [encoding/json]. Duration fields encode as int64 nanoseconds.
 type Stats struct {
-	CleanupInterval time.Duration
-	DefaultLifetime time.Duration
-	MaxLength       uint64
-	MaxSize         uint64
-	CurrentSize     uint64
-	CurrentLength   int
+	CleanupInterval time.Duration `json:"cleanup_interval"`
+	DefaultLifetime time.Duration `json:"default_lifetime"`
+	MaxLength       uint64        `json:"max_length"`
+	MaxSize         uint64        `json:"max_size"`
+	CurrentSize     uint64        `json:"current_size"`
+	CurrentLength   int           `json:"current_length"`
 }
 
-// Stats gets current cache state.
+// Stats returns a snapshot of the current cache state.
 func (c *Cache[K, T]) Stats() *Stats {
 	c.RLock()
 	defer c.RUnlock()
 
 	return &Stats{
-		c.opts.cleanupInterval,
-		c.opts.defaultLifetime,
-		c.opts.maxLength,
-		c.opts.maxSize,
-		c.size,
-		len(c.entries),
+		CleanupInterval: c.opts.cleanupInterval,
+		DefaultLifetime: c.opts.defaultLifetime,
+		MaxLength:       c.opts.maxLength,
+		MaxSize:         c.opts.maxSize,
+		CurrentSize:     c.size,
+		CurrentLength:   len(c.entries),
 	}
 }
