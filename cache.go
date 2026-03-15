@@ -266,17 +266,19 @@ func (c *Cache[K, T]) ScanFunc(fn func(K) bool) map[K]T {
 	return res
 }
 
-// Set saves data in cache with given key and options.
-// If key already exists, it will be removed before adding new value.
-func (c *Cache[K, T]) Set(k K, a T, opts ...unitOptFn[T]) error {
+func (c *Cache[K, T]) Set(k K, v T, opts ...entryOption[T]) error {
 	c.Lock()
 	defer c.Unlock()
 
-	return c.set(k, a, opts...)
+	ou, ok := c.units[k]
+	if ok {
+		c.delete(k, ou)
+	}
+
+	return c.set(k, v, opts...)
 }
 
-// Add sets data in cache only if given key does not exist.
-func (c *Cache[K, T]) Add(k K, a T, opts ...unitOptFn[T]) error {
+func (c *Cache[K, T]) Add(k K, v T, opts ...entryOption[T]) error {
 	c.Lock()
 	defer c.Unlock()
 
@@ -284,18 +286,15 @@ func (c *Cache[K, T]) Add(k K, a T, opts ...unitOptFn[T]) error {
 		return &unitError[K]{k, ErrExist}
 	}
 
-	return c.set(k, a, opts...)
+	return c.set(k, v, opts...)
 }
 
-// set is the internal implementation of Set. It must only be called
-// with the write lock already held.
-func (c *Cache[K, T]) set(k K, a T, opts ...unitOptFn[T]) error {
-	ou, ok := c.units[k]
-	if ok {
-		c.delete(k, ou)
-	}
-
-	if !ok && c.opts.maxLength != 0 {
+// verifyLength enforces the maxLength constraint before a new entry is
+// inserted. If the map is at capacity and displacement is on, one random
+// entry is evicted to make room; otherwise [ErrMaxLength] is returned.
+// Must be called with the write lock held.
+func (c *Cache[K, T]) verifyLength() error {
+	if c.opts.maxLength != 0 {
 		if len(c.units)+1 > int(c.opts.maxLength) {
 			if !c.opts.displacement {
 				return ErrMaxLength
@@ -305,34 +304,58 @@ func (c *Cache[K, T]) set(k K, a T, opts ...unitOptFn[T]) error {
 		}
 	}
 
+	return nil
+}
+
+// set is the internal implementation of Set/Add. It must be called with the
+// write lock already held. It creates the cache entry, calculates its size
+// when a max-size limit is configured, converts the per-entry lifetime into
+// an absolute monotonic expiry via revive, and then delegates to verifySize
+// before storing the entry.
+func (c *Cache[K, T]) set(k K, a T, opts ...entryOption[T]) error {
+	if err := c.verifyLength(); err != nil {
+		return err
+	}
+
 	u := unit[T]{Data: a, Exp: c.opts.defaultLifetime}
 	for _, fn := range opts {
 		u = fn(u)
 	}
 
-	if u.Exp != 0 {
-		u = u.revive(u.Exp)
+	if c.opts.maxSize != 0 && u.Size == 0 {
+		u.Size = c.opts.getDataSize(k, a)
 	}
 
-	if c.opts.maxSize != 0 {
-		if u.Size == 0 {
-			u.Size = c.opts.getDataSize(k, a)
-		}
+	u.revive(u.Exp)
 
+	if err := c.verifySize(&u); err != nil {
+		return err
+	}
+
+	c.units[k] = u
+
+	return nil
+}
+
+// verifySize enforces the maxSize constraint before a new entry is stored.
+// Skipped entirely when maxSize is 0 or u.Size is 0 (unknown size).
+// When displacement is on, random entries are evicted until there is room;
+// otherwise [ErrMaxSize] is returned. Increments c.size on success.
+// Must be called with the write lock held.
+func (c *Cache[K, T]) verifySize(u *unit[T]) error {
+	if c.opts.maxSize != 0 && u.Size != 0 {
 		if c.size+u.Size > c.opts.maxSize {
 			if !c.opts.displacement {
 				return ErrMaxSize
 			}
 
-			for c.size > c.opts.maxSize {
+			for c.size+u.Size > c.opts.maxSize {
 				c.deleteOneRnd()
 			}
 		}
 
 		c.size += u.Size
 	}
-
-	c.units[k] = u
 
 	return nil
 }

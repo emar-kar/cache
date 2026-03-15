@@ -108,32 +108,35 @@ func WithSizeFn[K comparable, T any](fn func(K, T) uint64) cacheOptFn[K, T] {
 	return func(co *options[K, T]) { co.getDataSize = fn }
 }
 
-type unitOptFn[T any] func(unit[T]) unit[T]
+type entryOption[T any] func(unit[T]) unit[T]
 
 // WithLifetime sets custom lifetime for cache key.
 //
 // Deprecated: WithLifetime exists for historical compatibility and will be
 // removed in a future version. Use [WithTTL] instead, which accepts a
 // [time.Duration] directly.
-func WithLifetime[T any](lt uint64) unitOptFn[T] {
+func WithLifetime[T any](lt uint64) entryOption[T] {
 	return func(u unit[T]) unit[T] {
 		u.Exp = time.Duration(lt)
 		return u
 	}
 }
 
-// WithTTL sets a custom time-to-live for a single cache key, overriding the
-// cache default. A value of 0 means the key never expires.
-func WithTTL[T any](d time.Duration) unitOptFn[T] {
+// WithTTL sets a custom time-to-live for a single cache key, overriding
+// the cache default set by [WithDefaultTTL]. A value of 0 means the key
+// never expires, regardless of the cache default.
+func WithTTL[T any](d time.Duration) entryOption[T] {
 	return func(u unit[T]) unit[T] {
 		u.Exp = d
 		return u
 	}
 }
 
-// WithSize sets custom size for key data. If set, cache will ignore
-// size calculation and use passed value. Adds default metadata size.
-func WithSize[T any](s uint64) unitOptFn[T] {
+// WithSize sets an explicit size in bytes for a single cache entry,
+// bypassing automatic size calculation. When set, the cache will use this
+// value directly and skip the size function. Use this when you know the
+// exact memory cost of an entry (e.g. when loading persisted data).
+func WithSize[T any](s uint64) entryOption[T] {
 	return func(u unit[T]) unit[T] {
 		u.Size = s
 		return u
