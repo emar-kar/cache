@@ -344,7 +344,7 @@ func (c *Cache[K, T]) Add(k K, v T, opts ...entryOption[T]) error {
 // Must be called with the write lock held.
 func (c *Cache[K, T]) verifyLength() error {
 	if c.opts.maxLength != 0 {
-		if len(c.units)+1 > int(c.opts.maxLength) {
+		if len(c.entries)+1 > int(c.opts.maxLength) {
 			if !c.opts.displacement {
 				return ErrMaxLength
 			}
@@ -596,16 +596,16 @@ func (c *Cache[K, T]) Length() int {
 
 // Len returns the number of keys currently in the cache.
 func (c *Cache[K, T]) Len() int {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	defer c.RUnlock()
 
-	return len(c.units)
+	return len(c.entries)
 }
 
 // Size returns current size of the cache in bytes.
 func (c *Cache[K, T]) Size() uint64 {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	defer c.RUnlock()
 
 	return c.size
 }
@@ -782,8 +782,8 @@ type Stats struct {
 
 // Stats gets current cache state.
 func (c *Cache[K, T]) Stats() *Stats {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	defer c.RUnlock()
 
 	return &Stats{
 		c.opts.cleanupInterval,
