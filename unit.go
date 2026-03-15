@@ -14,16 +14,20 @@ type unit[T any] struct {
 	Size uint64        `json:"size,omitempty"`
 }
 
-// revive returns a copy of the unit with its expiration time extended by lt
-// nanoseconds from now, measured against the monotonic clock anchored at
-// runtimeStart.
-func (u unit[T]) revive(lt time.Duration) unit[T] {
+// revive sets the expiration time to time.Since(runtimeStart) + lt, anchoring
+// the expiry to the monotonic clock so it is unaffected by wall-clock adjustments.
+// If lt is 0 the unit is left unchanged (no-op).
+func (u *unit[T]) revive(lt time.Duration) {
+	if lt == 0 {
+		return
+	}
+
 	u.Exp = time.Since(runtimeStart) + lt
-	return u
 }
 
-// expired reports whether the unit has passed its expiration time.
-// Units with Exp == 0 never expire.
+// expired reports whether the unit has passed its expiration time using
+// the monotonic clock offset from runtimeStart. Units with Exp == 0 never
+// expire (they were created without a TTL).
 func (u *unit[T]) expired() bool {
 	return u.Exp != 0 && time.Since(runtimeStart) >= u.Exp
 }

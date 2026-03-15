@@ -24,16 +24,17 @@ func defaultCacheOpts[K comparable, T any]() *options[K, T] {
 	}
 }
 
-// getSizeOf returns the in-memory size of the key and data using unsafe.Sizeof.
-// It reports the static layout size of the values — i.e. the size of the struct
-// or scalar itself — but does not follow pointers, so for types like string or
-// []byte the backing allocation is not counted. Use [WithDataSizeFn] when
-// precise deep-size accounting is required.
+// getSizeOf returns the in-memory size of key and data using unsafe.Sizeof.
+// It measures the static layout size of each value — the struct or scalar
+// itself — without following pointers. For types like string, []byte, or map
+// where the backing allocation is heap-allocated, this underestimates actual
+// memory usage. Use [WithSizeFn] to provide a more accurate measurement for
+// those types. Size is only calculated when a max-size limit is configured.
 func getSizeOf[K comparable, T any](key K, data T) uint64 {
 	return uint64(unsafe.Sizeof(key)) + uint64(unsafe.Sizeof(data))
 }
 
-type cacheOptFn[K comparable, T any] func(*options[K, T])
+type option[K comparable, T any] func(*options[K, T])
 
 // WithDisplacement allows displacement of variables in cache.
 // In case if adding new value will exceed max size or max length
@@ -47,19 +48,27 @@ func WithDisplacement[K comparable, T any](co *options[K, T]) {
 // Deprecated: WithDefaultLifetime exists for historical compatibility and will
 // be removed in a future version. Use [WithDefaultTTL] instead, which accepts
 // a [time.Duration] directly.
-func WithDefaultLifetime[K comparable, T any](lt uint64) cacheOptFn[K, T] {
+func WithDefaultLifetime[K comparable, T any](lt uint64) option[K, T] {
 	return func(co *options[K, T]) { co.defaultLifetime = time.Duration(lt) }
 }
 
 // WithDefaultTTL sets the default time-to-live for keys in cache.
-// Keys set without an explicit [WithTTL] option will expire after this duration.
-// A value of 0 means keys never expire.
-func WithDefaultTTL[K comparable, T any](d time.Duration) cacheOptFn[K, T] {
+// Keys inserted without an explicit [WithUnitTTL] option will expire after
+// this duration. A value of 0 means keys never expire by default.
+func WithDefaultTTL[K comparable, T any](d time.Duration) option[K, T] {
 	return func(co *options[K, T]) { co.defaultLifetime = d }
 }
 
 // WithCleanupInteval sets interval for janitor to clean expired keys.
-func WithCleanupInteval[K comparable, T any](d time.Duration) cacheOptFn[K, T] {
+//
+// Deprecated: WithCleanupInteval exists for historical compatibility and will
+// be removed in a future version. Use [WithCleanupInterval] instead.
+func WithCleanupInteval[K comparable, T any](d time.Duration) option[K, T] {
+	return WithCleanupInterval[K, T](d)
+}
+
+// WithCleanupInterval sets the interval at which the janitor removes expired keys.
+func WithCleanupInterval[K comparable, T any](d time.Duration) option[K, T] {
 	return func(co *options[K, T]) {
 		if d > 0 {
 			co.cleanupInterval = d
@@ -67,19 +76,34 @@ func WithCleanupInteval[K comparable, T any](d time.Duration) cacheOptFn[K, T] {
 	}
 }
 
-// WithMaxUnits sets maxixum number of keys, which can be stored in cache.
-func WithMaxUnits[K comparable, T any](mu uint64) cacheOptFn[K, T] {
-	return func(co *options[K, T]) { co.maxLength = mu }
+// WithMaxUnits sets the maximum number of keys that can be stored in cache.
+//
+// Deprecated: WithMaxUnits exists for historical compatibility and will be
+// removed in a future version. Use [WithMaxEntries] instead.
+func WithMaxUnits[K comparable, T any](mu uint64) option[K, T] {
+	return WithMaxEntries[K, T](mu)
+}
+
+// WithMaxEntries sets the maximum number of keys that can be stored in the cache.
+func WithMaxEntries[K comparable, T any](n uint64) option[K, T] {
+	return func(co *options[K, T]) { co.maxLength = n }
 }
 
 // WithMaxSize sets maximum cache data size in bytes.
-func WithMaxSize[K comparable, T any](ms uint64) cacheOptFn[K, T] {
+func WithMaxSize[K comparable, T any](ms uint64) option[K, T] {
 	return func(co *options[K, T]) { co.maxSize = ms }
 }
 
-// WithOnEvictionFn sets custom function which is applied when key is being
-// deleted from cache.
-func WithOnEvictionFn[K comparable, T any](fn func(K, T)) cacheOptFn[K, T] {
+// WithOnEvictionFn sets the function called when a key is evicted from cache.
+//
+// Deprecated: WithOnEvictionFn exists for historical compatibility and will be
+// removed in a future version. Use [WithOnEvictionFunc] instead.
+func WithOnEvictionFn[K comparable, T any](fn func(K, T)) option[K, T] {
+	return WithOnEvictionFunc[K, T](fn)
+}
+
+// WithOnEvictionFunc sets the function called when a key is evicted from cache.
+func WithOnEvictionFunc[K comparable, T any](fn func(K, T)) option[K, T] {
 	return func(co *options[K, T]) { co.onEviction = fn }
 }
 
@@ -92,7 +116,7 @@ func WithoutJanitorEviction[K comparable, T any](co *options[K, T]) { co.janitor
 // Deprecated: WithDataSizeFn exists for historical compatibility and will be
 // removed in a future version. The error return value is ignored internally.
 // Use [WithSizeFn] instead, which accepts a function without an error return.
-func WithDataSizeFn[K comparable, T any](fn func(K, T) (uint64, error)) cacheOptFn[K, T] {
+func WithDataSizeFn[K comparable, T any](fn func(K, T) (uint64, error)) option[K, T] {
 	return func(co *options[K, T]) {
 		co.getDataSize = func(k K, t T) uint64 {
 			n, _ := fn(k, t)
@@ -101,10 +125,19 @@ func WithDataSizeFn[K comparable, T any](fn func(K, T) (uint64, error)) cacheOpt
 	}
 }
 
-// WithSizeFn sets the function used to calculate the in-memory size of a
+// WithSizeFn sets the function used to calculate the in-memory size of a cache entry.
+//
+// Deprecated: WithSizeFn exists for historical compatibility and will be
+// removed in a future version. Use [WithSizeFunc] instead.
+func WithSizeFn[K comparable, T any](fn func(K, T) uint64) option[K, T] {
+	return WithSizeFunc[K, T](fn)
+}
+
+// WithSizeFunc sets the function used to calculate the in-memory size of a
 // cache entry. The function receives the key and value and must return their
-// combined size in bytes. Use this instead of the deprecated [WithDataSizeFn].
-func WithSizeFn[K comparable, T any](fn func(K, T) uint64) cacheOptFn[K, T] {
+// combined size in bytes. The function is only called when a max-size limit is
+// configured and the entry does not already have an explicit size set via [WithSize].
+func WithSizeFunc[K comparable, T any](fn func(K, T) uint64) option[K, T] {
 	return func(co *options[K, T]) { co.getDataSize = fn }
 }
 

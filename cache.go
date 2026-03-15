@@ -1,9 +1,11 @@
-// Package cache is a simple implementation of in-memory key-value storage
-// based on golang map type. This package allows to setup various options,
-// such as values expiration time (default, individual), max number of
-// entries in cache, max byte size of data which can be stored in cache.
-// Data can be dumped into json file and restored from it with all saved metadata.
-// Cache usage is thread safe and it can be accessed from multiple goroutines.
+// Package cache provides a generic, thread-safe in-memory key-value store
+// backed by a Go map. It supports configurable expiration per entry (default
+// or individual), an optional maximum number of entries, an optional maximum
+// byte budget, and a janitor that periodically removes expired keys.
+// Data can be persisted to and restored from JSON. Expiration is tracked via
+// a monotonic clock offset so it is immune to wall-clock adjustments, but
+// expiration state cannot be faithfully restored across process restarts.
+// Cache usage is safe for concurrent access from multiple goroutines.
 package cache
 
 import (
@@ -47,7 +49,7 @@ type Cache[K comparable, T any] struct {
 }
 
 // New creates new Cache instance with given options.
-func New[K comparable, T any](opts ...cacheOptFn[K, T]) *Cache[K, T] {
+func New[K comparable, T any](opts ...option[K, T]) *Cache[K, T] {
 	co := defaultCacheOpts[K, T]()
 	for _, fn := range opts {
 		fn(co)
@@ -105,7 +107,13 @@ func (c *Cache[K, T]) ChangeJanitorOnEviction(b bool) {
 
 }
 
-// ChangeMaxSize updates cache default options with new cache max size in bytes.
+// ChangeMaxSize updates the maximum cache size in bytes. Rebuilds the
+// internal size counter from scratch so that calls switching from an
+// unlimited cache (maxSize == 0) to a limited one are handled correctly.
+// If the tracked size already exceeds i, or if re-accumulation during the
+// rebuild would exceed i and displacement is off, [ErrMaxSize] is returned.
+// When displacement is on, entries are evicted until the budget allows the
+// new limit to be applied.
 func (c *Cache[K, T]) ChangeMaxSize(i uint64) error {
 	c.Lock()
 	defer c.Unlock()
@@ -128,18 +136,19 @@ func (c *Cache[K, T]) ChangeMaxSize(i uint64) error {
 	return nil
 }
 
-// ChangeMaxLength updates cache default options with new max number of keys.
-// Returns [ErrMaxLength] if new value is lower than number of keys already in cache.
+// ChangeMaxLength updates the maximum number of keys allowed in the cache.
+// Returns [ErrMaxLength] if the current number of entries already exceeds ml.
+// Displacement is not applied when changing the limit; shrink the cache
+// manually before calling this if needed.
 func (c *Cache[K, T]) ChangeMaxLength(ml uint64) error {
 	c.Lock()
+	defer c.Unlock()
 
 	if len(c.units) > int(ml) {
-		c.Unlock()
 		return ErrMaxLength
 	}
 
 	c.opts.maxLength = ml
-	c.Unlock()
 
 	return nil
 }
@@ -154,17 +163,28 @@ func (c *Cache[K, T]) ChangeDefaultLifeTime(lt uint64) {
 	c.ChangeDefaultTTL(time.Duration(lt))
 }
 
-// ChangeDefaultTTL updates the default time-to-live for new keys.
-// Does not affect keys already in cache.
+// ChangeDefaultTTL updates the default time-to-live for keys stored after
+// this call. Existing keys are not affected; their expiry was set at insert
+// time. A value of 0 means new keys will not expire.
 func (c *Cache[K, T]) ChangeDefaultTTL(d time.Duration) {
 	c.Lock()
 	c.opts.defaultLifetime = d
 	c.Unlock()
 }
 
-// ChangeSizeFn updates cache default options with new function to define data size.
-// Does not affect keys already in cache.
+// ChangeSizeFn replaces the function used to calculate the size of a cache entry.
+//
+// Deprecated: ChangeSizeFn exists for historical compatibility and will be
+// removed in a future version. Use [Cache.ChangeSizeFunc] instead.
 func (c *Cache[K, T]) ChangeSizeFn(fn func(K, T) uint64) {
+	c.ChangeSizeFunc(fn)
+}
+
+// ChangeSizeFunc replaces the function used to calculate the in-memory size of
+// a cache entry (key + value, in bytes). The new function applies to entries
+// inserted after this call; existing entries retain their stored size.
+// Size calculation only runs when a maximum size limit is configured.
+func (c *Cache[K, T]) ChangeSizeFunc(fn func(K, T) uint64) {
 	c.Lock()
 	c.opts.getDataSize = fn
 	c.Unlock()
@@ -175,19 +195,25 @@ func (c *Cache[K, T]) ChangeSizeFn(fn func(K, T) uint64) {
 //
 // Deprecated: ChangeDataSizeFn exists for historical compatibility and will be
 // removed in a future version. The error return value is ignored internally.
-// Use [Cache.ChangeSizeFn] instead, which accepts a function without an error return.
+// Use [Cache.ChangeSizeFunc] instead, which accepts a function without an error return.
 func (c *Cache[K, T]) ChangeDataSizeFn(fn func(K, T) (uint64, error)) {
-	c.ChangeSizeFn(func(k K, t T) uint64 {
+	c.ChangeSizeFunc(func(k K, t T) uint64 {
 		n, _ := fn(k, t)
 		return n
 	})
 }
 
-// ChangeOnEvictionFn updates cache default options with new function
-// which runs when key is being cleaned after expiration.
-// If janitor is cleaning cache, this function will wait until it
-// finishes, before changing on eviction function.
+// ChangeOnEvictionFn updates the function called when a key is evicted from cache.
+//
+// Deprecated: ChangeOnEvictionFn exists for historical compatibility and will be
+// removed in a future version. Use [Cache.ChangeOnEvictionFunc] instead.
 func (c *Cache[K, T]) ChangeOnEvictionFn(fn func(K, T)) {
+	c.ChangeOnEvictionFunc(fn)
+}
+
+// ChangeOnEvictionFunc updates the function called when a key is evicted from
+// cache. Waits for any in-progress janitor run to finish before applying the change.
+func (c *Cache[K, T]) ChangeOnEvictionFunc(fn func(K, T)) {
 	c.StopCleaning()
 	c.Lock()
 	c.opts.onEviction = fn
@@ -202,9 +228,10 @@ func (c *Cache[K, T]) ChangeDisplacementPolicy(v bool) {
 	c.Unlock()
 }
 
-// Get returns data of the given key. If key does not exist then
-// [ErrNotExists] will be returned. If key is already expired, but
-// was not yet cleaned, returns data and [ErrExpired] as error.
+// Get returns the data stored for k. Returns [ErrNotExist] wrapped in a
+// [unitError] if the key is absent. If the key is present but has passed its
+// expiration time and has not yet been cleaned, the data is still returned
+// together with [ErrExpired].
 func (c *Cache[K, T]) Get(k K) (T, error) {
 	u, ok := c.getUnit(k)
 	switch {
@@ -225,7 +252,7 @@ func (c *Cache[K, T]) getUnit(k K) (unit[T], bool) {
 	return u, ok
 }
 
-// deleteOneRnd takes first random key from the underlying map.
+// deleteOneRnd takes a random key from the underlying map and deletes it.
 func (c *Cache[K, T]) deleteOneRnd() {
 	for k, u := range c.units {
 		c.delete(k, u)
@@ -266,6 +293,12 @@ func (c *Cache[K, T]) ScanFunc(fn func(K) bool) map[K]T {
 	return res
 }
 
+// Set stores v under k. If k already exists its current entry (including
+// size accounting) is removed first, then the new entry is inserted.
+// Returns [ErrMaxLength] if the cache is full and displacement is disabled,
+// or [ErrMaxSize] if the entry would exceed the size budget and displacement
+// is disabled. When displacement is enabled a random existing entry is
+// evicted to make room.
 func (c *Cache[K, T]) Set(k K, v T, opts ...entryOption[T]) error {
 	c.Lock()
 	defer c.Unlock()
@@ -278,6 +311,9 @@ func (c *Cache[K, T]) Set(k K, v T, opts ...entryOption[T]) error {
 	return c.set(k, v, opts...)
 }
 
+// Add stores v under k only if k does not already exist in the cache.
+// Returns [ErrExist] if k is present. Subject to the same length/size
+// limits as [Cache.Set].
 func (c *Cache[K, T]) Add(k K, v T, opts ...entryOption[T]) error {
 	c.Lock()
 	defer c.Unlock()
@@ -360,8 +396,9 @@ func (c *Cache[K, T]) verifySize(u *unit[T]) error {
 	return nil
 }
 
-// Replace replaces data of the given key only if this key exists in cache
-// and is not expired.
+// Replace replaces the stored value for k without changing its expiry or
+// size. Returns [ErrNotExist] if the key is absent, or [ErrExpired] if the
+// key has passed its expiration time.
 func (c *Cache[K, T]) Replace(k K, a T) error {
 	u, ok := c.getUnit(k)
 	if !ok {
@@ -432,8 +469,9 @@ func (c *Cache[K, T]) RemoveAll() {
 // function even if it was set.
 func (c *Cache[K, T]) RemoveExpired() {
 	c.Lock()
+	defer c.Unlock()
+
 	if len(c.units) == 0 {
-		c.Unlock()
 		return
 	}
 
@@ -446,7 +484,6 @@ func (c *Cache[K, T]) RemoveExpired() {
 			delete(c.units, k)
 		}
 	}
-	c.Unlock()
 }
 
 // Delete removes key with given name from cache. Do nothing if key
@@ -479,8 +516,9 @@ func (c *Cache[K, T]) DeleteAll() {
 // if it was set.
 func (c *Cache[K, T]) DeleteExpired() {
 	c.Lock()
+	defer c.Unlock()
+
 	if len(c.units) == 0 {
-		c.Unlock()
 		return
 	}
 
@@ -497,7 +535,6 @@ func (c *Cache[K, T]) DeleteExpired() {
 			}
 		}
 	}
-	c.Unlock()
 }
 
 // Alive creates copy of the cache with not expired keys data.
@@ -517,7 +554,11 @@ func (c *Cache[K, T]) Alive() map[K]T {
 	return m
 }
 
-// Snapshot creates copy of the cache with all keys data.
+// Snapshot returns a shallow copy of all entries as a plain map[K]T,
+// including entries that may be expired but not yet cleaned.
+// For simple data persistence, prefer serialising the snapshot directly
+// over [Cache.Save]: the caller controls the encoder and TTLs are re-applied
+// at insertion time rather than being approximate.
 func (c *Cache[K, T]) Snapshot() map[K]T {
 	c.Lock()
 
@@ -532,8 +573,16 @@ func (c *Cache[K, T]) Snapshot() map[K]T {
 	return m
 }
 
-// Length returns number of keys in cache.
+// Length returns the number of keys in the cache.
+//
+// Deprecated: Length exists for historical compatibility and will be
+// removed in a future version. Use [Cache.Len] instead.
 func (c *Cache[K, T]) Length() int {
+	return c.Len()
+}
+
+// Len returns the number of keys currently in the cache.
+func (c *Cache[K, T]) Len() int {
 	c.Lock()
 	defer c.Unlock()
 
@@ -548,7 +597,9 @@ func (c *Cache[K, T]) Size() uint64 {
 	return c.size
 }
 
-// Revive prolongs lifetime of the key with default value from cache options.
+// Revive resets the expiry of k to the cache default TTL, effectively
+// giving the key a fresh lifetime from now. Returns [ErrNotExist] if k
+// is absent. If the default TTL is 0 the key is left unchanged (no-op).
 func (c *Cache[K, T]) Revive(k K) error {
 	u, ok := c.getUnit(k)
 	if !ok {
@@ -556,7 +607,8 @@ func (c *Cache[K, T]) Revive(k K) error {
 	}
 
 	c.Lock()
-	c.units[k] = u.revive(c.opts.defaultLifetime)
+	u.revive(c.opts.defaultLifetime)
+	c.units[k] = u
 	c.Unlock()
 
 	return nil
@@ -571,7 +623,8 @@ func (c *Cache[K, T]) ReviveUntil(k K, lt uint64) error {
 	return c.ReviveFor(k, time.Duration(lt))
 }
 
-// ReviveFor prolongs lifetime of the key by the given duration.
+// ReviveFor resets the expiry of k to d from now. Returns [ErrNotExist] if k
+// is absent. If d is 0 the key is left unchanged (no-op per [unit.revive]).
 func (c *Cache[K, T]) ReviveFor(k K, d time.Duration) error {
 	u, ok := c.getUnit(k)
 	if !ok {
@@ -579,7 +632,8 @@ func (c *Cache[K, T]) ReviveFor(k K, d time.Duration) error {
 	}
 
 	c.Lock()
-	c.units[k] = u.revive(d)
+	u.revive(d)
+	c.units[k] = u
 	c.Unlock()
 
 	return nil
@@ -635,7 +689,20 @@ func Decrement[K comparable, T Integer](c *Cache[K, T], k K, n T) (T, error) {
 	return u.Data, nil
 }
 
-// Save dumps cache into the given [io.Writer] with json marshaller.
+// Save serialises the current cache contents to w as indented JSON.
+//
+// Consider using [Cache.Snapshot] instead: it returns a plain map[K]T
+// that you can encode with any serialiser of your choice, re-insert with
+// explicit TTLs, and avoids the limitations listed below.
+//
+// Known limitations:
+//   - Serialisation uses encoding/json, so T must be JSON-marshallable.
+//     Values containing functions, channels, or unexported fields will
+//     produce an error or silently lose data. Maps with non-string keys
+//     are also not supported by the standard JSON encoder.
+//   - The expiry field of each entry is a monotonic offset relative to
+//     the current process start and is not meaningful across restarts.
+//     See [Cache.Load] for how expiry is handled on restore.
 func (c *Cache[K, T]) Save(w io.Writer) error {
 	c.Lock()
 	defer c.Unlock()
@@ -650,7 +717,22 @@ func (c *Cache[K, T]) Save(w io.Writer) error {
 	return err
 }
 
-// Load restore cache from the given [io.Reader] with json unmarshaller.
+// Load restores cache entries from r, which must contain JSON produced by
+// [Cache.Save]. Each entry is inserted via the normal set path so that
+// maxLength and maxSize limits (including displacement) are respected.
+//
+// Consider using [Cache.Snapshot] with a custom encoder and [Cache.Set]
+// instead: it gives full control over serialisation format and per-entry TTLs.
+//
+// Known limitations:
+//   - Expiry is not faithfully restored. The saved offset is relative to a
+//     different process start and cannot be reused. All loaded entries
+//     receive a fresh TTL from the cache default ([WithDefaultTTL]). Entries
+//     without a default TTL are loaded as non-expiring.
+//   - The saved size is reused when non-zero; otherwise the configured size
+//     function recalculates it. If T was saved with a custom size function
+//     that is no longer configured, sizes may differ.
+//   - JSON deserialisation is subject to the same type constraints as [Cache.Save].
 func (c *Cache[K, T]) Load(r io.Reader) error {
 	b, err := io.ReadAll(r)
 	if err != nil {
@@ -664,12 +746,13 @@ func (c *Cache[K, T]) Load(r io.Reader) error {
 	}
 
 	c.Lock()
+	defer c.Unlock()
 
 	for k, u := range data {
-		c.units[k] = u
+		if err := c.set(k, u.Data, WithSize[T](u.Size)); err != nil {
+			return err
+		}
 	}
-
-	c.Unlock()
 
 	return nil
 }
@@ -687,7 +770,9 @@ type Stats struct {
 // Stats gets current cache state.
 func (c *Cache[K, T]) Stats() *Stats {
 	c.Lock()
-	s := &Stats{
+	defer c.Unlock()
+
+	return &Stats{
 		c.opts.cleanupInterval,
 		c.opts.defaultLifetime,
 		c.opts.maxLength,
@@ -695,7 +780,4 @@ func (c *Cache[K, T]) Stats() *Stats {
 		c.size,
 		len(c.units),
 	}
-	c.Unlock()
-
-	return s
 }
