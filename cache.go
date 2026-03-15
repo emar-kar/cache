@@ -108,14 +108,22 @@ func (c *Cache[K, T]) ChangeJanitorOnEviction(b bool) {
 // ChangeMaxSize updates cache default options with new cache max size in bytes.
 func (c *Cache[K, T]) ChangeMaxSize(i uint64) error {
 	c.Lock()
+	defer c.Unlock()
 
 	if c.size > i {
-		c.Unlock()
 		return ErrMaxSize
 	}
 
 	c.opts.maxSize = i
-	c.Unlock()
+	c.size = 0
+
+	if c.opts.maxSize != 0 {
+		for _, u := range c.units {
+			if err := c.verifySize(&u); err != nil {
+				return err
+			}
+		}
+	}
 
 	return nil
 }
