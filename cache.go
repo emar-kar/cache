@@ -424,20 +424,21 @@ func (c *Cache[K, T]) verifySize(e *entry[T]) error {
 // Replace replaces the stored value for k without changing its expiry or
 // size. Returns [ErrNotExist] if the key is absent, or [ErrExpired] if the
 // key has passed its expiration time.
-func (c *Cache[K, T]) Replace(k K, a T) error {
-	u, ok := c.getUnit(k)
-	if !ok {
-		return &unitError[K]{k, ErrNotExist}
-	}
-
-	if u.expired() {
-		return &unitError[K]{k, ErrExpired}
-	}
-
+func (c *Cache[K, T]) Replace(k K, v T) error {
 	c.Lock()
-	u.Data = a
-	c.units[k] = u
-	c.Unlock()
+	defer c.Unlock()
+
+	e, ok := c.entries[k]
+	if !ok {
+		return &entryError[K]{k, ErrNotExist}
+	}
+
+	if e.expired() {
+		return &entryError[K]{k, ErrExpired}
+	}
+
+	e.Data = v
+	c.entries[k] = e
 
 	return nil
 }
