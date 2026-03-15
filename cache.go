@@ -443,22 +443,33 @@ func (c *Cache[K, T]) Replace(k K, v T) error {
 	return nil
 }
 
-// Rename renames old key with a new name only if given key exists in cache
-// and is not expired.
+// Rename renames oldKey to newKey. Returns [ErrExist] if newKey already
+// exists, or [ErrNotExist] if oldKey is absent. If oldKey is expired it is
+// revived with the cache default TTL before being stored under newKey;
+// if the default TTL is 0 the expired entry is renamed as-is (still expired).
 func (c *Cache[K, T]) Rename(oldKey, newKey K) error {
-	u, ok := c.getUnit(oldKey)
-	if !ok {
-		return &unitError[K]{oldKey, ErrNotExist}
-	}
-
-	if u.expired() {
-		return &unitError[K]{oldKey, ErrExpired}
+	if oldKey == newKey {
+		return nil
 	}
 
 	c.Lock()
-	c.units[newKey] = u
-	c.delete(oldKey, u)
-	c.Unlock()
+	defer c.Unlock()
+
+	if _, ok := c.entries[newKey]; ok {
+		return &entryError[K]{newKey, ErrExist}
+	}
+
+	oldU, ok := c.entries[oldKey]
+	if !ok {
+		return &entryError[K]{oldKey, ErrNotExist}
+	}
+
+	if oldU.expired() {
+		oldU.revive(c.opts.defaultLifetime)
+	}
+
+	c.entries[newKey] = oldU
+	delete(c.entries, oldKey)
 
 	return nil
 }
