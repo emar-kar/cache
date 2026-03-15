@@ -477,18 +477,15 @@ func (c *Cache[K, T]) Rename(oldKey, newKey K) error {
 // Remove removes key with given name from cache. Do nothing if key
 // does not exist. Does not apply on eviction function even if it was set.
 func (c *Cache[K, T]) Remove(k K) {
-	u, ok := c.getUnit(k)
-	if !ok {
-		return
-	}
-
-	if c.opts.maxSize != 0 {
-		c.size -= u.Size
-	}
-
 	c.Lock()
-	delete(c.units, k)
-	c.Unlock()
+	defer c.Unlock()
+
+	if e, ok := c.entries[k]; ok {
+		if c.opts.maxSize != 0 {
+			c.size -= e.Size
+		}
+		delete(c.entries, k)
+	}
 }
 
 // RemoveAll removes all keys from cache.
