@@ -37,14 +37,13 @@ func (c *Cache[K, T]) hireJanitor() {
 
 		go func() {
 			for {
-				if withEviction {
-					c.DeleteExpired()
-				} else {
-					c.RemoveExpired()
-				}
-
 				select {
 				case <-j.t.C:
+					if withEviction {
+						c.DeleteExpired()
+					} else {
+						c.RemoveExpired()
+					}
 				case <-j.stop:
 					return
 				}
