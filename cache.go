@@ -247,7 +247,8 @@ func (c *Cache[K, T]) Get(k K) (T, error) {
 	e, ok := c.entries[k]
 	switch {
 	case !ok:
-		return *new(T), &entryError[K]{k, ErrNotExist}
+		var zero T
+		return zero, &entryError[K]{k, ErrNotExist}
 	case e.expired():
 		return e.Data, &entryError[K]{k, ErrExpired}
 	default:
