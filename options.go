@@ -12,6 +12,7 @@ type options[K comparable, T any] struct {
 	defaultLifetime  time.Duration
 	maxLength        uint64
 	maxSize          uint64
+	initialCap       int
 	displacement     bool
 	janitorWEviction bool
 }
@@ -92,6 +93,13 @@ func WithMaxEntries[K comparable, T any](n uint64) option[K, T] {
 // WithMaxSize sets maximum cache data size in bytes.
 func WithMaxSize[K comparable, T any](ms uint64) option[K, T] {
 	return func(co *options[K, T]) { co.maxSize = ms }
+}
+
+// WithCapacity sets the initial capacity hint for the internal map.
+// This pre-allocates space for n entries, avoiding map growth allocations
+// when the approximate number of entries is known ahead of time.
+func WithCapacity[K comparable, T any](n int) option[K, T] {
+	return func(co *options[K, T]) { co.initialCap = n }
 }
 
 // WithOnEvictionFn sets the function called when a key is evicted from cache.

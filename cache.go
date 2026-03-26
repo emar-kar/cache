@@ -55,7 +55,7 @@ func New[K comparable, T any](opts ...option[K, T]) *Cache[K, T] {
 		fn(co)
 	}
 
-	c := &Cache[K, T]{entries: make(map[K]entry[T]), opts: co}
+	c := &Cache[K, T]{entries: make(map[K]entry[T], co.initialCap), opts: co}
 	c.hireJanitor()
 
 	return c
