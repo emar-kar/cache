@@ -118,14 +118,14 @@ func (c *Cache[K, T]) ChangeMaxSize(i uint64) error {
 	c.Lock()
 	defer c.Unlock()
 
-	if c.size > i {
-		return ErrMaxSize
-	}
-
 	// Speculatively accumulate the new size counter without touching any
 	// cache state, so a failure leaves c.size and c.opts.maxSize unchanged.
 	var newSize uint64
 	if i != 0 {
+		if c.size > i {
+			return ErrMaxSize
+		}
+
 		for _, e := range c.entries {
 			if e.Size == 0 {
 				continue
@@ -144,14 +144,15 @@ func (c *Cache[K, T]) ChangeMaxSize(i uint64) error {
 }
 
 // ChangeMaxLength updates the maximum number of keys allowed in the cache.
-// Returns [ErrMaxLength] if the current number of entries already exceeds ml.
+// Returns [ErrMaxLength] if ml is non-zero and the current number of entries
+// already exceeds ml. Setting ml to 0 disables the length limit.
 // Displacement is not applied when changing the limit; shrink the cache
 // manually before calling this if needed.
 func (c *Cache[K, T]) ChangeMaxLength(ml uint64) error {
 	c.Lock()
 	defer c.Unlock()
 
-	if len(c.entries) > int(ml) {
+	if ml != 0 && len(c.entries) > int(ml) {
 		return ErrMaxLength
 	}
 
