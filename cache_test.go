@@ -11,14 +11,18 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 var ErrTest = errors.New("test error")
 
+// workers is the number of goroutines used in concurrent tests.
+var workers = runtime.NumCPU() * 4
+
 func TestEmptyCacheStats(t *testing.T) {
-	c := New[any]()
+	c := New[string, any]()
 	stats := c.Stats()
 
 	if stats.DefaultLifetime != 0 {
@@ -45,11 +49,12 @@ func TestEmptyCacheStats(t *testing.T) {
 }
 
 func TestCacheWithOpts(t *testing.T) {
-	c := New[any](
-		WithMaxSize(52),
-		WithMaxUnits(2),
+	c := New(
+		WithMaxSize[string, any](52),
+		WithMaxUnits[string, any](2),
 		WithOnEvictionFn(func(s string, a any) {}),
-		WithDataSizeFn(getSizeOf),
+		// Returns 26 bytes per entry so two entries (2×26=52) fit exactly.
+		WithSizeFn(func(_ string, _ any) uint64 { return 26 }),
 	)
 
 	if err := c.Set("foo", "bar"); err != nil {
@@ -72,8 +77,8 @@ func TestCacheWithOpts(t *testing.T) {
 		t.Errorf("cache size: got %d; expected: 2", c.Size())
 	}
 
-	if err := c.ChangeMaxLength(0); !errors.Is(err, ErrMaxLength) {
-		t.Error("cache length change did not fail")
+	if err := c.ChangeMaxLength(0); err != nil {
+		t.Errorf("ChangeMaxLength(0) should disable limit: %v", err)
 	}
 
 	c.ChangeMaxLength(3)
@@ -84,8 +89,8 @@ func TestCacheWithOpts(t *testing.T) {
 		t.Errorf("got: %q; expected: %q", err, ErrMaxSize)
 	}
 
-	if err := c.ChangeMaxSize(0); !errors.Is(err, ErrMaxSize) {
-		t.Error("cache size change did not fail")
+	if err := c.ChangeMaxSize(0); err != nil {
+		t.Errorf("ChangeMaxSize(0) should disable limit: %v", err)
 	}
 
 	c.ChangeMaxSize(100)
@@ -125,30 +130,17 @@ func TestCacheWithOpts(t *testing.T) {
 
 	c.DeleteAll()
 
-	type testStruct struct{ data string }
+	// Changing the size function to report 0 (unknown size) means entries
+	// are no longer charged against the size budget.
+	c.ChangeSizeFunc(func(_ string, _ any) uint64 { return 0 })
 
-	v := &testStruct{data: "test data"}
-
-	if err := c.Set("foo", v); err == nil {
-		t.Fatal("unknown struct was serialized")
-	}
-
-	c.ChangeSizeFn(func(s string, a any) (uint64, error) {
-		return 0, ErrTest
-	})
-
-	var dstErr *unitError
-
-	expected := "key \"foo\": test error"
-
-	if err := c.Set("foo", "bar"); !errors.As(err, &dstErr) ||
-		err.Error() != expected {
-		t.Errorf("got: %q; expected: %q", err, expected)
+	if err := c.Set("foo", "bar"); err != nil {
+		t.Errorf("set with unknown size got: %v", err)
 	}
 }
 
 func TestCacheScan(t *testing.T) {
-	c := New[any]()
+	c := New[string, any]()
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +149,9 @@ func TestCacheScan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := c.Scan("fo")
+	res := c.ScanFunc(func(k string, v any) bool {
+		return len(k) >= 2 && k[:2] == "fo"
+	})
 
 	v1, ok := res["foo"]
 	if !ok || v1 != "bar" {
@@ -171,18 +165,18 @@ func TestCacheScan(t *testing.T) {
 }
 
 func TestCacheAdd(t *testing.T) {
-	c := New[any]()
+	c := New[string, any]()
 	if err := c.Add("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := c.Add("foo", "bar"); !errors.Is(err, ErrExists) {
-		t.Errorf("add got: %q; expected: %q", err, ErrExists)
+	if err := c.Add("foo", "bar"); !errors.Is(err, ErrExist) {
+		t.Errorf("add got: %q; expected: %q", err, ErrExist)
 	}
 }
 
 func TestCacheReplace(t *testing.T) {
-	c := New[any]()
+	c := New[string, any]()
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -200,8 +194,8 @@ func TestCacheReplace(t *testing.T) {
 		t.Errorf("unit data got: %q, expected \"bar2\"", data)
 	}
 
-	if err := c.Replace("foo2", ""); !errors.Is(err, ErrNotExists) {
-		t.Error(&unitError{"foo2", ErrExists})
+	if err := c.Replace("foo2", ""); !errors.Is(err, ErrNotExist) {
+		t.Error(&entryError[string]{"foo2", ErrExist})
 	}
 
 	c.ChangeDefaultLifeTime(uint64(100 * time.Millisecond))
@@ -218,7 +212,7 @@ func TestCacheReplace(t *testing.T) {
 }
 
 func TestCacheRename(t *testing.T) {
-	c := New[any]()
+	c := New[string, any]()
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -227,8 +221,8 @@ func TestCacheRename(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := c.Get("foo"); !errors.Is(err, ErrNotExists) {
-		t.Error(&unitError{"foo", ErrExists})
+	if _, err := c.Get("foo"); !errors.Is(err, ErrNotExist) {
+		t.Error(&entryError[string]{"foo", ErrExist})
 	}
 
 	data, err := c.Get("foo2")
@@ -240,8 +234,16 @@ func TestCacheRename(t *testing.T) {
 		t.Errorf("unit data got: %q, expected \"bar\"", data)
 	}
 
-	if err := c.Rename("foo", "foo2"); !errors.Is(err, ErrNotExists) {
-		t.Error(&unitError{"foo", ErrExists})
+	// "foo" no longer exists (renamed to "foo2" above); "foo2" does exist.
+	// Rename checks the destination key first, so ErrExist is returned
+	// before the absent source key is even inspected.
+	if err := c.Rename("foo", "foo2"); !errors.Is(err, ErrExist) {
+		t.Error(&entryError[string]{"foo2", ErrExist})
+	}
+
+	// When neither key exists the source check fires and returns ErrNotExist.
+	if err := c.Rename("foo", "foo3"); !errors.Is(err, ErrNotExist) {
+		t.Error(&entryError[string]{"foo", ErrNotExist})
 	}
 
 	c.ChangeDefaultLifeTime(uint64(100 * time.Millisecond))
@@ -252,8 +254,15 @@ func TestCacheRename(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 
-	if err := c.Rename("foo", "foo2"); !errors.Is(err, ErrExpired) {
-		t.Errorf("cache rename got: %q: expected: %q", err, ErrExpired)
+	// "foo" is expired, "foo2" exists → destination checked first → ErrExist.
+	if err := c.Rename("foo", "foo2"); !errors.Is(err, ErrExist) {
+		t.Errorf("cache rename got: %q: expected: %q", err, ErrExist)
+	}
+
+	// "foo" is expired, "foo3" does not exist → destination ok, source expired
+	// → entry is revived with the default TTL and stored under "foo3".
+	if err := c.Rename("foo", "foo3"); err != nil {
+		t.Errorf("cache rename of expired key got: %q: expected success", err)
 	}
 }
 
@@ -261,17 +270,17 @@ func TestCacheDelete(t *testing.T) {
 	done := make(chan struct{}, 1)
 	var sb strings.Builder
 
-	goEviction := func() func(string, any) {
-		return func(s string, a any) {
+	goEviction := func() func(string, string) {
+		return func(s string, a string) {
 			go func() {
-				sb.WriteString(fmt.Sprintf("unit %q: remove data: %q", s, a))
+				fmt.Fprintf(&sb, "unit %q: remove data: %q", s, a)
 				close(done)
 			}()
 		}
 	}
 
-	c := New[any](
-		WithMaxSize(50),
+	c := New(
+		WithMaxSize[string, string](50),
 		WithOnEvictionFn(goEviction()),
 	)
 	if err := c.Set("foo", "bar"); err != nil {
@@ -298,30 +307,30 @@ func TestCacheDelete(t *testing.T) {
 			t.Error("delete timed out")
 			return
 		case <-done:
-			if _, err := c.Get("foo"); errors.Is(err, ErrNotExists) {
+			if _, err := c.Get("foo"); errors.Is(err, ErrNotExist) {
 				if sb.String() != `unit "foo": remove data: "bar"` {
 					t.Error("on eviction got:", sb.String())
 				}
 
 				return
 			} else {
-				t.Error(&unitError{"foo", ErrExists})
+				t.Error(&entryError[string]{"foo", ErrExist})
 			}
 		}
 	}
 }
 
 func TestCacheExpired(t *testing.T) {
-	c := New[any](WithDefaultLifetime(uint64(100 * time.Millisecond)))
+	c := New(WithDefaultLifetime[string, string](uint64(100 * time.Millisecond)))
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
 
 	time.Sleep(150 * time.Millisecond)
 
-	u, ok := c.getUnit("foo")
+	u, ok := c.entries["foo"]
 	if !ok {
-		t.Fatal(&unitError{"foo", ErrNotExists})
+		t.Fatal(&entryError[string]{"foo", ErrNotExist})
 	}
 
 	if !u.expired() {
@@ -330,7 +339,7 @@ func TestCacheExpired(t *testing.T) {
 }
 
 func TestCacheRemove(t *testing.T) {
-	c := New[any](WithMaxSize(1028))
+	c := New(WithMaxSize[string, string](1028))
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -344,15 +353,15 @@ func TestCacheRemove(t *testing.T) {
 }
 
 func TestCacheRemoveAll(t *testing.T) {
-	c := New[any]()
+	c := New[string, string]()
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
 
 	c.RemoveAll()
 
-	if _, err := c.Get("foo"); !errors.Is(err, ErrNotExists) {
-		t.Fatal(&unitError{"foo", ErrExists})
+	if _, err := c.Get("foo"); !errors.Is(err, ErrNotExist) {
+		t.Fatal(&entryError[string]{"foo", ErrExist})
 	}
 
 	if c.Size() != 0 {
@@ -361,7 +370,10 @@ func TestCacheRemoveAll(t *testing.T) {
 }
 
 func TestCacheRemoveExpired(t *testing.T) {
-	c := New[any](WithDefaultLifetime(uint64(100*time.Millisecond)), WithMaxSize(1028))
+	c := New(
+		WithDefaultLifetime[string, string](uint64(100*time.Millisecond)),
+		WithMaxSize[string, string](1028),
+	)
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
@@ -370,8 +382,8 @@ func TestCacheRemoveExpired(t *testing.T) {
 
 	c.RemoveExpired()
 
-	if _, err := c.Get("foo"); !errors.Is(err, ErrNotExists) {
-		t.Fatal(&unitError{"foo", err})
+	if _, err := c.Get("foo"); !errors.Is(err, ErrNotExist) {
+		t.Fatal(&entryError[string]{"foo", err})
 	}
 
 	c.RemoveExpired()
@@ -382,12 +394,12 @@ func TestCacheRemoveExpired(t *testing.T) {
 }
 
 func TestCacheAlive(t *testing.T) {
-	c := New[any](WithDefaultLifetime(uint64(100 * time.Millisecond)))
+	c := New(WithDefaultLifetime[string, string](uint64(100 * time.Millisecond)))
 	if err := c.Set("foo", "bar"); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := c.Set("bar", "foo", WithLifetime[any](uint64(5*time.Minute))); err != nil {
+	if err := c.Set("bar", "foo", WithLifetime[string](uint64(5*time.Minute))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -400,14 +412,14 @@ func TestCacheAlive(t *testing.T) {
 	}
 
 	if _, ok := data["bar"]; !ok {
-		t.Error("unit did not expired")
+		t.Error("unit expired unexpectedly")
 	}
 }
 
 func TestCacheRevive(t *testing.T) {
 	d := uint64(5 * time.Minute)
-	c := New[any](WithDefaultLifetime(d))
-	if err := c.Set("foo", "bar", WithLifetime[any](uint64(100*time.Millisecond))); err != nil {
+	c := New(WithDefaultLifetime[string, string](d))
+	if err := c.Set("foo", "bar", WithLifetime[string](uint64(100*time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -421,7 +433,7 @@ func TestCacheRevive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	u, ok := c.getUnit("foo")
+	u, ok := c.entries["foo"]
 	if !ok {
 		t.Fatal("unit \"foo\" does not exist")
 	}
@@ -430,14 +442,14 @@ func TestCacheRevive(t *testing.T) {
 		t.Fatal("unit expire")
 	}
 
-	if err := c.Revive("bar"); !errors.Is(err, ErrNotExists) {
+	if err := c.Revive("bar"); !errors.Is(err, ErrNotExist) {
 		t.Error(err)
 	}
 }
 
 func TestCacheReviveUntil(t *testing.T) {
-	c := New[any](WithDefaultLifetime(uint64(5 * time.Minute)))
-	if err := c.Set("foo", "bar", WithLifetime[any](uint64(100*time.Millisecond))); err != nil {
+	c := New(WithDefaultLifetime[string, string](uint64(5 * time.Minute)))
+	if err := c.Set("foo", "bar", WithLifetime[string](uint64(100*time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -453,7 +465,7 @@ func TestCacheReviveUntil(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	u, ok := c.getUnit("foo")
+	u, ok := c.entries["foo"]
 	if !ok {
 		t.Fatal("unit \"foo\" does not exist")
 	}
@@ -462,13 +474,13 @@ func TestCacheReviveUntil(t *testing.T) {
 		t.Fatal("unit expire")
 	}
 
-	if err := c.ReviveUntil("bar", d); !errors.Is(err, ErrNotExists) {
-		t.Error(&unitError{"bar", ErrExists})
+	if err := c.ReviveUntil("bar", d); !errors.Is(err, ErrNotExist) {
+		t.Error(&entryError[string]{"bar", ErrExist})
 	}
 }
 
 func TestCacheIncrement(t *testing.T) {
-	c := New[int]()
+	c := New[string, int]()
 	if err := c.Set("test", 0); err != nil {
 		t.Fatal(err)
 	}
@@ -492,8 +504,8 @@ func TestCacheIncrement(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 
-	if _, err := Increment(c, "foo", 1); !errors.Is(err, ErrNotExists) {
-		t.Fatal(&unitError{"foo", ErrExists})
+	if _, err := Increment(c, "foo", 1); !errors.Is(err, ErrNotExist) {
+		t.Fatal(&entryError[string]{"foo", ErrExist})
 	}
 
 	if _, err := Increment(c, "test", 1); !errors.Is(err, ErrExpired) {
@@ -502,7 +514,7 @@ func TestCacheIncrement(t *testing.T) {
 }
 
 func TestCacheDecrement(t *testing.T) {
-	c := New[int]()
+	c := New[string, int]()
 	if err := c.Set("test", 1); err != nil {
 		t.Fatal(err)
 	}
@@ -526,8 +538,8 @@ func TestCacheDecrement(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 
-	if _, err := Decrement(c, "foo", 1); !errors.Is(err, ErrNotExists) {
-		t.Fatal(&unitError{"foo", ErrExists})
+	if _, err := Decrement(c, "foo", 1); !errors.Is(err, ErrNotExist) {
+		t.Fatal(&entryError[string]{"foo", ErrExist})
 	}
 
 	if _, err := Decrement(c, "test", 1); !errors.Is(err, ErrExpired) {
@@ -536,18 +548,18 @@ func TestCacheDecrement(t *testing.T) {
 }
 
 func TestCacheJanitor(t *testing.T) {
-	c := New[any](
-		WithCleanupInteval(time.Hour),
-		WithDefaultLifetime(uint64(time.Minute)),
-		WithMaxSize(100),
+	c := New(
+		WithCleanupInterval[string, string](time.Hour),
+		WithDefaultLifetime[string, string](uint64(time.Minute)),
+		WithMaxSize[string, string](100),
 	)
 
 	var sb strings.Builder
 
 	done := make(chan struct{}, 1)
 
-	c.ChangeOnEvictionFn(func(s string, a any) {
-		sb.WriteString(fmt.Sprintf("unit %q: removed", s))
+	c.ChangeOnEvictionFn(func(s string, a string) {
+		fmt.Fprintf(&sb, "unit %q: removed", s)
 		close(done)
 	})
 
@@ -573,9 +585,9 @@ func TestCacheJanitor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	u, ok := c.getUnit("foo")
+	u, ok := c.entries["foo"]
 	if !ok {
-		t.Fatal(&unitError{"foo", ErrNotExists})
+		t.Fatal(&entryError[string]{"foo", ErrNotExist})
 	}
 
 	time.Sleep(150 * time.Millisecond)
@@ -597,14 +609,14 @@ func TestCacheJanitor(t *testing.T) {
 			t.Error("clean-up timed out")
 			return
 		case <-done:
-			if _, err := c.Get("foo"); errors.Is(err, ErrNotExists) {
+			if _, err := c.Get("foo"); errors.Is(err, ErrNotExist) {
 				if sb.String() != `unit "foo": removed` {
 					t.Error("on eviction got:", sb.String())
 				}
 
 				return
 			} else {
-				t.Error(&unitError{"foo", ErrExists})
+				t.Errorf("expected key %q to be cleaned, got: %v", "foo", err)
 			}
 		}
 	}
@@ -615,16 +627,16 @@ func TestCacheJanitorEviction(t *testing.T) {
 
 	done := make(chan struct{}, 1)
 
-	c := New[any](
-		WithCleanupInteval(250*time.Millisecond),
+	c := New(
+		WithCleanupInterval[string, string](250*time.Millisecond),
 		WithoutJanitorEviction,
-		WithOnEvictionFn(func(s string, a any) {
-			sb.WriteString(fmt.Sprintf("unit %q: remove data: %q", s, a))
+		WithOnEvictionFn(func(s string, a string) {
+			fmt.Fprintf(&sb, "unit %q: remove data: %q", s, a)
 			close(done)
 		}),
 	)
 
-	if err := c.Set("foo", "bar", WithLifetime[any](uint64(100*time.Millisecond))); err != nil {
+	if err := c.Set("foo", "bar", WithLifetime[string](uint64(100*time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -632,15 +644,15 @@ func TestCacheJanitorEviction(t *testing.T) {
 
 	c.StopCleaning()
 
-	if _, err := c.Get("foo"); errors.Is(err, ErrNotExists) {
+	if _, err := c.Get("foo"); errors.Is(err, ErrNotExist) {
 		if sb.String() != "" {
 			t.Error("on eviction got:", sb.String())
 		}
 	} else {
-		t.Error(&unitError{"foo", ErrExists})
+		t.Errorf("janitor did not remove key %q: %v", "foo", err)
 	}
 
-	if err := c.Set("foo", "bar", WithLifetime[any](uint64(100*time.Millisecond))); err != nil {
+	if err := c.Set("foo", "bar", WithLifetime[string](uint64(100*time.Millisecond))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -656,14 +668,14 @@ func TestCacheJanitorEviction(t *testing.T) {
 			t.Error("clean-up timed out")
 			return
 		case <-done:
-			if _, err := c.Get("foo"); errors.Is(err, ErrNotExists) {
+			if _, err := c.Get("foo"); errors.Is(err, ErrNotExist) {
 				if sb.String() != `unit "foo": remove data: "bar"` {
 					t.Error("on eviction got:", sb.String())
 				}
 
 				return
 			} else {
-				t.Error(&unitError{"foo", ErrExists})
+				t.Errorf("expected key %q to be cleaned with eviction, got: %v", "foo", err)
 			}
 		}
 	}
@@ -684,9 +696,9 @@ type writer struct{}
 func (*writer) Write([]byte) (int, error) { return 0, nil }
 
 func TestCacheSaveLoad(t *testing.T) {
-	c := New[any](
-		WithDefaultLifetime(uint64(time.Hour)),
-		WithMaxSize(1028),
+	c := New(
+		WithDefaultLifetime[string, any](uint64(time.Hour)),
+		WithMaxSize[string, any](1028),
 	)
 
 	if err := c.Set("foo", "simple string"); err != nil {
@@ -809,258 +821,912 @@ func TestCacheSaveLoad(t *testing.T) {
 	}
 }
 
-func BenchmarkCacheGetDataWithLifetime(b *testing.B) {
-	b.StopTimer()
-	c := New[any]()
-	c.Set("foo", "bar", WithLifetime[any](uint64(5*time.Minute)))
-	b.StartTimer()
-	for range b.N {
-		c.Get("foo")
-	}
-}
+// TestConcurrentSet verifies that concurrent Set calls on different keys
+// do not cause data races.
+func TestConcurrentSet(t *testing.T) {
+	c := New[int, int]()
 
-func BenchmarkCacheGetData(b *testing.B) {
-	b.StopTimer()
-	c := New[any]()
-	c.Set("foo", "bar")
-	b.StartTimer()
-	for range b.N {
-		c.Get("foo")
-	}
-}
-
-func BenchmarkCacheGetExpiredConcurrent(b *testing.B) {
-	b.StopTimer()
-	c := New[any]()
-	c.Set("foo", "bar", WithLifetime[any](uint64(5*time.Minute)))
-	wg := new(sync.WaitGroup)
-	workers := runtime.NumCPU()
-	each := b.N / workers
+	var wg sync.WaitGroup
 	wg.Add(workers)
-	b.StartTimer()
+
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			if err := c.Set(i, i); err != nil {
+				t.Errorf("Set key%d: unexpected error: %v", i, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	if c.Length() != workers {
+		t.Errorf("expected %d keys, got %d", workers, c.Length())
+	}
+}
+
+// TestConcurrentSetSameKey verifies that concurrent Set calls on the same key
+// do not cause data races. The last write wins; final value must be valid.
+func TestConcurrentSetSameKey(t *testing.T) {
+	c := New[string, int]()
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			if err := c.Set("key", i); err != nil {
+				t.Errorf("Set: unexpected error: %v", err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	v, err := c.Get("key")
+	if err != nil {
+		t.Errorf("Get after concurrent Set: %v", err)
+	}
+
+	if v < 0 || v >= workers {
+		t.Errorf("Get: value %d out of expected range [0, %d)", v, workers)
+	}
+}
+
+// TestConcurrentAdd verifies that concurrent Add calls for the same key
+// result in exactly one success. This exercises the atomicity fix in Add.
+func TestConcurrentAdd(t *testing.T) {
+	c := New[string, int]()
+
+	var wg sync.WaitGroup
+	var succeeded atomic.Int64
+
+	wg.Add(workers)
+
 	for range workers {
 		go func() {
-			for range each {
-				c.Get("foo")
+			defer wg.Done()
+			if err := c.Add("key", 1); err == nil {
+				succeeded.Add(1)
 			}
-			wg.Done()
 		}()
 	}
+
+	wg.Wait()
+
+	if n := succeeded.Load(); n != 1 {
+		t.Errorf("Add: expected exactly 1 success, got %d", n)
+	}
+
+	if v, _ := c.Get("key"); v != 1 {
+		t.Errorf("Add: expected value 1, got %d", v)
+	}
+}
+
+// TestConcurrentGetSet runs concurrent reads and writes on overlapping keys.
+func TestConcurrentGetSet(t *testing.T) {
+	c := New[int, int]()
+
+	for i := range workers {
+		c.Set(i, i)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers * 2)
+
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			c.Get(i % workers)
+		}(i)
+
+		go func(i int) {
+			defer wg.Done()
+			c.Set(i%workers, i*2)
+		}(i)
+	}
+
 	wg.Wait()
 }
 
-func BenchmarkCacheGetDataConcurrent(b *testing.B) {
-	b.StopTimer()
-	c := New[any]()
-	c.Set("foo", "bar")
-	wg := new(sync.WaitGroup)
-	workers := runtime.NumCPU()
-	each := b.N / workers
-	wg.Add(workers)
-	b.StartTimer()
-	for range workers {
-		go func() {
-			for range each {
-				c.Get("foo")
-			}
-			wg.Done()
-		}()
+// TestConcurrentReplace verifies concurrent Replace calls do not race.
+func TestConcurrentReplace(t *testing.T) {
+	c := New[string, int]()
+
+	if err := c.Set("key", 0); err != nil {
+		t.Fatal(err)
 	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			// Replace may return ErrNotExist if a concurrent Delete wins first;
+			// that is acceptable behaviour.
+			c.Replace("key", i)
+		}(i)
+	}
+
 	wg.Wait()
 }
 
-func BenchmarkCacheSetWithOpts(b *testing.B) {
-	b.StopTimer()
-	c := New[any]()
-	b.StartTimer()
-	for range b.N {
-		c.Set(
-			"foo",
-			"bar",
-			WithLifetime[any](uint64(100*time.Millisecond)),
-			WithSize[any](20),
-		)
+// TestConcurrentRename verifies concurrent Rename calls on independent keys
+// do not cause data races.
+func TestConcurrentRename(t *testing.T) {
+	c := New[int, int]()
+
+	for i := range workers {
+		c.Set(i, i)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			c.Rename(i, -i)
+		}(i)
+	}
+
+	wg.Wait()
+
+	for i := range workers {
+		if _, err := c.Get(-i); err != nil {
+			t.Errorf("Rename: expected key %d to exist: %v", -i, err)
+		}
 	}
 }
 
-func BenchmarkCacheSetData(b *testing.B) {
-	b.StopTimer()
-	c := New[any]()
-	b.StartTimer()
-	for range b.N {
-		c.Set("foo", "bar")
+// TestConcurrentDelete verifies concurrent Delete calls on independent keys
+// do not cause data races and drain the cache to empty.
+func TestConcurrentDelete(t *testing.T) {
+	c := New[int, int]()
+
+	for i := range workers {
+		c.Set(i, i)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			c.Delete(i)
+		}(i)
+	}
+
+	wg.Wait()
+
+	if n := c.Length(); n != 0 {
+		t.Errorf("Delete: expected empty cache, got %d keys", n)
 	}
 }
 
-func BenchmarkCacheIncrement(b *testing.B) {
-	b.StopTimer()
-	c := New[int]()
-	if err := c.Set("test", -1); err != nil {
-		b.Error(err)
+// TestConcurrentRemove verifies concurrent Remove calls on independent keys
+// do not cause data races and correctly account for size.
+//
+// NOTE: Remove currently updates c.size outside the write lock, so this test
+// is expected to expose a data race when run with -race until that is fixed.
+func TestConcurrentRemove(t *testing.T) {
+	c := New(WithMaxSize[int, int](1 << 20))
+
+	for i := range workers {
+		c.Set(i, i)
 	}
-	b.StartTimer()
-	for range b.N {
-		Increment(c, "test", 1)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			c.Remove(i)
+		}(i)
+	}
+
+	wg.Wait()
+
+	if n := c.Length(); n != 0 {
+		t.Errorf("Remove: expected empty cache, got %d keys", n)
+	}
+
+	if s := c.Size(); s != 0 {
+		t.Errorf("Remove: expected size 0, got %d (possible lost size updates)", s)
 	}
 }
 
-func BenchmarkCacheDecrement(b *testing.B) {
-	b.StopTimer()
-	c := New[int]()
-	if err := c.Set("test", b.N+1); err != nil {
-		b.Error(err)
+// TestConcurrentDeleteAll verifies that concurrent DeleteAll and Set calls
+// do not cause data races.
+func TestConcurrentDeleteAll(t *testing.T) {
+	c := New[int, int]()
+
+	var wg sync.WaitGroup
+	wg.Add(workers * 2)
+
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			c.Set(i, i)
+		}(i)
+
+		go func() {
+			defer wg.Done()
+			c.DeleteAll()
+		}()
 	}
-	b.StartTimer()
-	for i := b.N; i > 0; i-- {
-		Decrement(c, "test", 1)
+
+	wg.Wait()
+}
+
+// TestConcurrentRemoveAll verifies that concurrent RemoveAll and Set calls
+// do not cause data races.
+func TestConcurrentRemoveAll(t *testing.T) {
+	c := New[int, int]()
+
+	var wg sync.WaitGroup
+	wg.Add(workers * 2)
+
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			c.Set(i, i)
+		}(i)
+
+		go func() {
+			defer wg.Done()
+			c.RemoveAll()
+		}()
+	}
+
+	wg.Wait()
+}
+
+// TestConcurrentDeleteExpired verifies that concurrent DeleteExpired calls
+// do not cause data races.
+func TestConcurrentDeleteExpired(t *testing.T) {
+	lt := uint64(50 * time.Millisecond)
+	c := New(WithDefaultLifetime[int, int](lt))
+
+	for i := range workers {
+		c.Set(i, i)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for range workers {
+		go func() {
+			defer wg.Done()
+			c.DeleteExpired()
+		}()
+	}
+
+	wg.Wait()
+
+	if n := c.Length(); n != 0 {
+		t.Errorf("DeleteExpired: expected empty cache, got %d keys", n)
 	}
 }
 
-// TODO: add concurrent Set benchmark and test?
+// TestConcurrentRemoveExpired verifies that concurrent RemoveExpired calls
+// do not cause data races.
+func TestConcurrentRemoveExpired(t *testing.T) {
+	lt := uint64(50 * time.Millisecond)
+	c := New(WithDefaultLifetime[int, int](lt))
 
-func ExampleCache() {
-	c := New[any]()
-
-	if err := c.Set("foo", "bar"); err != nil {
-		// Process error...
+	for i := range workers {
+		c.Set(i, i)
 	}
 
-	data, err := c.Get("foo")
+	time.Sleep(100 * time.Millisecond)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for range workers {
+		go func() {
+			defer wg.Done()
+			c.RemoveExpired()
+		}()
+	}
+
+	wg.Wait()
+
+	if n := c.Length(); n != 0 {
+		t.Errorf("RemoveExpired: expected empty cache, got %d keys", n)
+	}
+}
+
+// TestConcurrentIncrement verifies that concurrent Increment calls on the same
+// key produce the correct final value.
+//
+// NOTE: Increment currently reads the value under RLock and writes it back
+// under a separate Lock, so concurrent increments can lose updates. This test
+// is expected to fail until the read-modify-write is made atomic.
+func TestConcurrentIncrement(t *testing.T) {
+	c := New[string, int]()
+
+	if err := c.Set("counter", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for range workers {
+		go func() {
+			defer wg.Done()
+			if _, err := Increment(c, "counter", 1); err != nil {
+				t.Errorf("Increment: unexpected error: %v", err)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	v, err := c.Get("counter")
 	if err != nil {
-		// Process error...
+		t.Fatal(err)
 	}
 
-	fmt.Println(data) // Prints: "bar".
+	if v != workers {
+		t.Errorf("Increment: expected %d, got %d (lost updates)", workers, v)
+	}
 }
 
-func ExampleCache_withOptions() {
-	c := New[any](
-		WithCleanupInteval(time.Minute),
-		WithDefaultLifetime(uint64(500*time.Millisecond)),
+// TestConcurrentDecrement verifies that concurrent Decrement calls on the same
+// key produce the correct final value.
+//
+// NOTE: Same lost-update issue as Increment — expected to fail until fixed.
+func TestConcurrentDecrement(t *testing.T) {
+	c := New[string, int]()
+
+	if err := c.Set("counter", workers); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for range workers {
+		go func() {
+			defer wg.Done()
+			if _, err := Decrement(c, "counter", 1); err != nil {
+				t.Errorf("Decrement: unexpected error: %v", err)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	v, err := c.Get("counter")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if v != 0 {
+		t.Errorf("Decrement: expected 0, got %d (lost updates)", v)
+	}
+}
+
+// TestConcurrentRevive verifies that concurrent Revive calls on the same key
+// do not cause data races.
+func TestConcurrentRevive(t *testing.T) {
+	lt := uint64(5 * time.Minute)
+	c := New(WithDefaultLifetime[string, int](lt))
+
+	if err := c.Set("key", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for range workers {
+		go func() {
+			defer wg.Done()
+			c.Revive("key")
+		}()
+	}
+
+	wg.Wait()
+
+	if _, err := c.Get("key"); err != nil {
+		t.Errorf("Revive: key missing after concurrent revive: %v", err)
+	}
+}
+
+// TestConcurrentReviveUntil verifies that concurrent ReviveUntil calls on the
+// same key do not cause data races.
+func TestConcurrentReviveUntil(t *testing.T) {
+	lt := uint64(5 * time.Minute)
+	c := New[string, int]()
+
+	if err := c.Set("key", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for range workers {
+		go func() {
+			defer wg.Done()
+			c.ReviveUntil("key", lt)
+		}()
+	}
+
+	wg.Wait()
+
+	if _, err := c.Get("key"); err != nil {
+		t.Errorf("ReviveUntil: key missing after concurrent revive: %v", err)
+	}
+}
+
+// TestConcurrentSnapshot verifies that Snapshot is safe to call concurrently
+// with Set.
+func TestConcurrentSnapshot(t *testing.T) {
+	c := New[int, int]()
+
+	var wg sync.WaitGroup
+	wg.Add(workers * 2)
+
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			c.Set(i, i)
+		}(i)
+
+		go func() {
+			defer wg.Done()
+			_ = c.Snapshot()
+		}()
+	}
+
+	wg.Wait()
+}
+
+// TestConcurrentAlive verifies that Alive is safe to call concurrently with Set.
+func TestConcurrentAlive(t *testing.T) {
+	c := New[int, int]()
+
+	var wg sync.WaitGroup
+	wg.Add(workers * 2)
+
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			c.Set(i, i)
+		}(i)
+
+		go func() {
+			defer wg.Done()
+			_ = c.Alive()
+		}()
+	}
+
+	wg.Wait()
+}
+
+// TestConcurrentStats verifies that Stats, Length, and Size are safe to call
+// concurrently with Set.
+func TestConcurrentStats(t *testing.T) {
+	c := New[int, int]()
+
+	var wg sync.WaitGroup
+	wg.Add(workers * 4)
+
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			c.Set(i, i)
+		}(i)
+
+		go func() { defer wg.Done(); _ = c.Stats() }()
+		go func() { defer wg.Done(); _ = c.Length() }()
+		go func() { defer wg.Done(); _ = c.Size() }()
+	}
+
+	wg.Wait()
+}
+
+// populate inserts n entries into c, keyed "key0" … "key{n-1}".
+func populate[T any](c *Cache[int, T], n int, val T) {
+	for i := range n {
+		c.Set(i, val)
+	}
+}
+
+// BenchmarkSetNew measures Set performance when each call inserts a fresh key,
+// growing the cache continuously.
+func BenchmarkSetNew(b *testing.B) {
+	c := New[int, string]()
+	for i := range b.N {
+		c.Set(i, "value")
+	}
+}
+
+// BenchmarkSetNewWithCapacity measures Set with a pre-allocated map.
+func BenchmarkSetNewWithCapacity(b *testing.B) {
+	c := New(WithCapacity[int, string](b.N))
+	for i := range b.N {
+		c.Set(i, "value")
+	}
+}
+
+// BenchmarkSetOverwrite measures Set performance when the same key is
+// overwritten on every call (steady-state size of 1).
+func BenchmarkSetOverwrite(b *testing.B) {
+	c := New[string, string]()
+	for range b.N {
+		c.Set("key", "value")
+	}
+}
+
+// BenchmarkSetWithTTL measures Set with a per-entry TTL option.
+func BenchmarkSetWithTTL(b *testing.B) {
+	c := New[string, string]()
+	for range b.N {
+		c.Set("key", "value", WithTTL[string](time.Minute))
+	}
+}
+
+// BenchmarkSetWithSize measures Set when a maxSize limit is configured so
+// that each entry triggers size calculation and accounting.
+func BenchmarkSetWithSize(b *testing.B) {
+	c := New(WithMaxSize[string, string](1 << 30))
+	for range b.N {
+		c.Set("key", "value", WithSize[string](16))
+	}
+}
+
+// BenchmarkSetDisplacement measures Set with displacement enabled; the cache
+// is kept at capacity so every Set evicts before inserting.
+func BenchmarkSetDisplacement(b *testing.B) {
+	const cap = 100
+	c := New(
+		WithMaxEntries[int, string](cap),
+		WithDisplacement[int, string],
 	)
-
-	if err := c.Set("foo", "bar"); err != nil {
-		// Process error...
-	}
-
-	time.Sleep(1 * time.Second)
-
-	data, err := c.Get("foo")
-	fmt.Println(data) // Prints: "bar".
-	fmt.Println(err)  // Prints: key "foo": is expired.
-
-	c.RemoveExpired()
-
-	_, err = c.Get("foo")
-	fmt.Println(err) // Prints: key "foo": does not exist.
-
-	if err := c.Set("foo", "bar", WithLifetime[any](uint64(1*time.Second))); err != nil {
-		// Process error...
-	}
-
-	time.Sleep(500 * time.Millisecond)
-
-	m := c.Alive()
-	if v, ok := m["foo"]; ok {
-		fmt.Println(v) // Prints: "bar".
+	populate(c, cap, "value")
+	b.ResetTimer()
+	for i := range b.N {
+		c.Set(i, "value")
 	}
 }
 
-func ExampleCache_saveLoad() {
-	c := New[any](
-		WithDefaultLifetime(uint64(time.Hour)),
-		WithMaxSize(1028),
-	)
-
-	if err := c.Set("foo", "simple string"); err != nil {
-		// Process error...
-	}
-
-	type test struct {
-		Str string `json:"str"`
-	}
-
-	testStruct := &test{"string in struct"}
-
-	if err := c.Set("foo2", testStruct); err != nil {
-		// Process error...
-	}
-
-	if err := c.Set("foo3", []string{"string in slice"}); err != nil {
-		// Process error...
-	}
-
-	if err := c.Set("foo4", map[string]string{"bar": "string in map"}); err != nil {
-		// Process error...
-	}
-
-	dumpFile := "dump.json"
-
-	f, err := os.Create(dumpFile)
-	if err != nil {
-		// Process error...
-	}
-
-	if err := c.Save(f); err != nil {
-		f.Close()
-		// Process error...
-	}
-
-	f.Close()
-	c.RemoveAll()
-
-	f, err = os.Open(dumpFile)
-	if err != nil {
-		// Process error...
-	}
-	defer f.Close()
-
-	if err := c.Load(f); err != nil {
-		// Process error...
-	}
-
-	str, err := c.Get("foo")
-	if err != nil {
-		// Process error...
-	}
-
-	fmt.Println(str) // Prints: "simple string".
-
-	if str, err := c.Get("foo2"); err != nil {
-		// Process error...
-	} else {
-		jsonData, err := json.Marshal(str)
-		if err != nil {
-			// Process error...
+// BenchmarkSetParallel measures concurrent Set on the same key.
+func BenchmarkSetParallel(b *testing.B) {
+	c := New[string, string]()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			c.Set("key", "value")
 		}
+	})
+}
 
-		var structData test
-		if err := json.Unmarshal(jsonData, &structData); err != nil {
-			// Process error...
-		}
-
-		// structData.Str == "string in struct".
+// BenchmarkGetHit measures Get when the key is present and live.
+func BenchmarkGetHit(b *testing.B) {
+	c := New[string, string]()
+	c.Set("key", "value")
+	b.ResetTimer()
+	for range b.N {
+		c.Get("key")
 	}
+}
 
-	if str, err := c.Get("foo3"); err != nil {
-		// Process error...
-	} else {
-		sl := make([]string, len(str.([]any)))
-		for i, el := range str.([]any) {
-			sl[i] = el.(string)
-		}
-
-		// sl[0] == "string in slice".
+// BenchmarkGetWithTTL measures Get on a live entry that carries an expiry.
+func BenchmarkGetWithTTL(b *testing.B) {
+	c := New[string, string]()
+	c.Set("key", "value", WithTTL[string](time.Hour))
+	b.ResetTimer()
+	for range b.N {
+		c.Get("key")
 	}
+}
 
-	if str, err := c.Get("foo4"); err != nil {
-		// Process error...
-	} else {
-		m := make(map[string]string, len(str.(map[string]any)))
-		for k, v := range str.(map[string]any) {
-			m[k] = v.(string)
+// BenchmarkGetMiss measures Get when the key is absent.
+func BenchmarkGetMiss(b *testing.B) {
+	c := New[string, string]()
+	b.ResetTimer()
+	for range b.N {
+		c.Get("key")
+	}
+}
+
+// BenchmarkGetExpired measures Get on a key that is present but past its TTL.
+func BenchmarkGetExpired(b *testing.B) {
+	c := New[string, string]()
+	c.Set("key", "value", WithTTL[string](time.Nanosecond))
+	time.Sleep(time.Millisecond)
+	b.ResetTimer()
+	for range b.N {
+		c.Get("key")
+	}
+}
+
+// BenchmarkGetParallel measures concurrent read throughput on a single key.
+func BenchmarkGetParallel(b *testing.B) {
+	c := New[string, string]()
+	c.Set("key", "value")
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			c.Get("key")
 		}
+	})
+}
 
-		// m["bar"] == "string in map".
+// BenchmarkGetSetMixedParallel measures throughput when reads and writes
+// compete concurrently on the same key (50/50 split).
+func BenchmarkGetSetMixedParallel(b *testing.B) {
+	c := New[string, string]()
+	c.Set("key", "value")
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			if i%2 == 0 {
+				c.Get("key")
+			} else {
+				c.Set("key", "value")
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkAddNew measures Add when the key is absent (succeeds every time).
+func BenchmarkAddNew(b *testing.B) {
+	c := New[int, string]()
+	for i := range b.N {
+		c.Add(i, "value")
+	}
+}
+
+// BenchmarkAddNewWithCapacity measures Add with a pre-allocated map.
+func BenchmarkAddNewWithCapacity(b *testing.B) {
+	c := New(WithCapacity[int, string](b.N))
+	for i := range b.N {
+		c.Add(i, "value")
+	}
+}
+
+// BenchmarkAddConflict measures Add when the key already exists (always
+// returns ErrExist — tests the fast-path rejection).
+func BenchmarkAddConflict(b *testing.B) {
+	c := New[string, string]()
+	c.Set("key", "value")
+	b.ResetTimer()
+	for range b.N {
+		c.Add("key", "value")
+	}
+}
+
+// BenchmarkReplace measures Replace on a live key (value changes, TTL and
+// size are preserved).
+func BenchmarkReplace(b *testing.B) {
+	c := New[string, string]()
+	c.Set("key", "value")
+	b.ResetTimer()
+	for range b.N {
+		c.Replace("key", "new-value")
+	}
+}
+
+// BenchmarkDelete measures Delete (fires the eviction callback if set).
+// The key is re-inserted before each timed operation.
+func BenchmarkDelete(b *testing.B) {
+	c := New[string, string]()
+	for range b.N {
+		c.Set("key", "value")
+		c.Delete("key")
+	}
+}
+
+// BenchmarkRemove measures silent Remove (no eviction callback).
+func BenchmarkRemove(b *testing.B) {
+	c := New[string, string]()
+	for range b.N {
+		c.Set("key", "value")
+		c.Remove("key")
+	}
+}
+
+// BenchmarkDeleteAll measures DeleteAll on a populated cache.
+func BenchmarkDeleteAll(b *testing.B) {
+	b.StopTimer()
+	caches := make([]*Cache[int, string], b.N)
+	for i := range b.N {
+		caches[i] = New[int, string]()
+		populate(caches[i], 10, "value")
+	}
+	b.StartTimer()
+	for i := range b.N {
+		caches[i].DeleteAll()
+	}
+}
+
+// BenchmarkRemoveAll measures RemoveAll (no eviction callbacks) on a cache.
+func BenchmarkRemoveAll(b *testing.B) {
+	b.StopTimer()
+	caches := make([]*Cache[int, string], b.N)
+	for i := range b.N {
+		caches[i] = New[int, string]()
+		populate(caches[i], 10, "value")
+	}
+	b.StartTimer()
+	for i := range b.N {
+		caches[i].RemoveAll()
+	}
+}
+
+// BenchmarkRename measures the cost of renaming an existing key.
+func BenchmarkRename(b *testing.B) {
+	c := New[int, string]()
+	for i := range b.N {
+		c.Set(i, "value")
+	}
+	b.ResetTimer()
+	for i := range b.N {
+		c.Rename(i, -(i + 1))
+	}
+}
+
+// BenchmarkRevive measures Revive using the cache default TTL.
+func BenchmarkRevive(b *testing.B) {
+	c := New(WithDefaultTTL[string, string](5 * time.Minute))
+	c.Set("key", "value")
+	b.ResetTimer()
+	for range b.N {
+		c.Revive("key")
+	}
+}
+
+// BenchmarkReviveFor measures ReviveFor with an explicit duration.
+func BenchmarkReviveFor(b *testing.B) {
+	c := New[string, string]()
+	c.Set("key", "value", WithTTL[string](5*time.Minute))
+	b.ResetTimer()
+	for range b.N {
+		c.ReviveFor("key", 5*time.Minute)
+	}
+}
+
+func BenchmarkAlive(b *testing.B) {
+	for _, n := range []int{10, 100, 1000} {
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			c := New[int, string]()
+			populate(c, n, "value")
+			b.ResetTimer()
+			for range b.N {
+				c.Alive()
+			}
+		})
+	}
+}
+
+func BenchmarkSnapshot(b *testing.B) {
+	for _, n := range []int{10, 100, 1000} {
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			c := New[int, string]()
+			populate(c, n, "value")
+			b.ResetTimer()
+			for range b.N {
+				c.Snapshot()
+			}
+		})
+	}
+}
+
+func BenchmarkScanFunc(b *testing.B) {
+	for _, n := range []int{10, 100, 1000} {
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			c := New[int, string]()
+			populate(c, n, "value")
+			b.ResetTimer()
+			for range b.N {
+				c.ScanFunc(func(k int, v string) bool { return k > 4 })
+			}
+		})
+	}
+}
+
+func BenchmarkIncrement(b *testing.B) {
+	c := New[string, int]()
+	c.Set("counter", 0)
+	b.ResetTimer()
+	for range b.N {
+		Increment(c, "counter", 1)
+	}
+}
+
+func BenchmarkDecrement(b *testing.B) {
+	c := New[string, int]()
+	c.Set("counter", 0)
+	b.ResetTimer()
+	for range b.N {
+		Decrement(c, "counter", 1)
+	}
+}
+
+func BenchmarkIncrementParallel(b *testing.B) {
+	c := New[string, int]()
+	c.Set("counter", 0)
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			Increment(c, "counter", 1)
+		}
+	})
+}
+
+// BenchmarkDeleteExpired measures DeleteExpired on a cache where all
+// entries have already expired.
+func BenchmarkDeleteExpired(b *testing.B) {
+	b.StopTimer()
+	caches := make([]*Cache[int, string], b.N)
+	for i := range b.N {
+		caches[i] = New[int, string]()
+		for j := range 10 {
+			caches[i].Set(j, "value", WithTTL[string](time.Nanosecond))
+		}
+	}
+	time.Sleep(time.Millisecond)
+	b.StartTimer()
+	for i := range b.N {
+		caches[i].DeleteExpired()
+	}
+}
+
+// BenchmarkRemoveExpired measures RemoveExpired on a cache where all
+// entries have already expired.
+func BenchmarkRemoveExpired(b *testing.B) {
+	b.StopTimer()
+	caches := make([]*Cache[int, string], b.N)
+	for i := range b.N {
+		caches[i] = New[int, string]()
+		for j := range 10 {
+			caches[i].Set(j, "value", WithTTL[string](time.Nanosecond))
+		}
+	}
+	time.Sleep(time.Millisecond)
+	b.StartTimer()
+	for i := range b.N {
+		caches[i].RemoveExpired()
+	}
+}
+
+func BenchmarkLen(b *testing.B) {
+	c := New[int, string]()
+	populate(c, 10, "value")
+	b.ResetTimer()
+	for range b.N {
+		c.Len()
+	}
+}
+
+func BenchmarkSize(b *testing.B) {
+	c := New(WithMaxSize[int, string](1 << 30))
+	populate(c, 10, "value")
+	b.ResetTimer()
+	for range b.N {
+		c.Size()
+	}
+}
+
+func BenchmarkStats(b *testing.B) {
+	c := New[int, string]()
+	populate(c, 10, "value")
+	b.ResetTimer()
+	for range b.N {
+		c.Stats()
 	}
 }
