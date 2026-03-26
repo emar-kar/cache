@@ -107,7 +107,7 @@ func WithCapacity[K comparable, T any](n int) option[K, T] {
 // Deprecated: WithOnEvictionFn exists for historical compatibility and will be
 // removed in a future version. Use [WithOnEvictionFunc] instead.
 func WithOnEvictionFn[K comparable, T any](fn func(K, T)) option[K, T] {
-	return WithOnEvictionFunc[K, T](fn)
+	return WithOnEvictionFunc(fn)
 }
 
 // WithOnEvictionFunc sets the function called when a key is evicted from cache.
@@ -138,7 +138,7 @@ func WithDataSizeFn[K comparable, T any](fn func(K, T) (uint64, error)) option[K
 // Deprecated: WithSizeFn exists for historical compatibility and will be
 // removed in a future version. Use [WithSizeFunc] instead.
 func WithSizeFn[K comparable, T any](fn func(K, T) uint64) option[K, T] {
-	return WithSizeFunc[K, T](fn)
+	return WithSizeFunc(fn)
 }
 
 // WithSizeFunc sets the function used to calculate the in-memory size of a
