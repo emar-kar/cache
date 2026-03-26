@@ -577,11 +577,11 @@ func (c *Cache[K, T]) DeleteExpired() {
 	}
 }
 
-// Alive creates copy of the cache with not expired keys data.
+// Alive returns a copy of all live (non-expired) entries in the cache.
 func (c *Cache[K, T]) Alive() map[K]T {
 	c.RLock()
 
-	m := make(map[K]T, len(c.entries))
+	m := make(map[K]T)
 
 	for k, e := range c.entries {
 		if !e.expired() {
