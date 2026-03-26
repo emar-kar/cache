@@ -4,39 +4,61 @@ import (
 	"time"
 )
 
+// janitor holds the ticker and stop channel used to drive the background
+// cleanup goroutine. It is created by hireJanitor and invalidated by
+// fireJanitor.
 type janitor struct {
 	t    *time.Ticker
 	stop chan struct{}
 }
 
-func (c *Cache[T]) inviteJanitor() {
-	for {
-		if c.opts.janitorWEviction {
-			c.DeleteExpired()
-		} else {
-			c.RemoveExpired()
+// hireJanitor starts a background goroutine that periodically removes expired
+// keys from the cache. It is a no-op when the configured cleanup interval is
+// non-positive. hireJanitor must be called with the cache write lock held so
+// that c.j is visible to all goroutines before any of them can call
+// fireJanitor.
+func (c *Cache[K, T]) hireJanitor() {
+	if d := c.opts.cleanupInterval; d > 0 {
+		c.j = &janitor{
+			t:    time.NewTicker(d),
+			stop: make(chan struct{}, 1),
 		}
 
-		select {
-		case <-c.j.t.C:
-		case <-c.j.stop:
-			return
-		}
+		// Capture both the janitor and the eviction flag as locals before
+		// launching the goroutine. The goroutine must not read c.j or
+		// c.opts.janitorWEviction directly: c.j may be overwritten (or set to
+		// nil) by fireJanitor under the write lock, and janitorWEviction may
+		// be changed by ChangeJanitorOnEviction — both would be concurrent,
+		// unsynchronised reads from the goroutine's perspective and would
+		// constitute data races. Using local copies makes the goroutine fully
+		// independent of any future mutations to those fields.
+		j := c.j
+		withEviction := c.opts.janitorWEviction
+
+		go func() {
+			for {
+				select {
+				case <-j.t.C:
+					if withEviction {
+						c.DeleteExpired()
+					} else {
+						c.RemoveExpired()
+					}
+				case <-j.stop:
+					return
+				}
+			}
+		}()
 	}
 }
 
-func hireJanitor(d time.Duration) *janitor {
-	if d <= 0 {
-		return nil
+// fireJanitor stops the current janitor goroutine and clears c.j. It is a
+// no-op when no janitor is running. fireJanitor must be called with the cache
+// write lock held.
+func (c *Cache[K, T]) fireJanitor() {
+	if c.j != nil {
+		c.j.t.Stop()
+		close(c.j.stop)
+		c.j = nil
 	}
-
-	return &janitor{
-		t:    time.NewTicker(d),
-		stop: make(chan struct{}, 1),
-	}
-}
-
-func (j *janitor) fireJanitor() {
-	j.t.Stop()
-	close(j.stop)
 }
