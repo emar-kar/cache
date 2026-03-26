@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"runtime"
 	"sync"
 	"time"
 )
@@ -547,7 +546,7 @@ func (c *Cache[K, T]) DeleteAll() {
 	defer c.Unlock()
 
 	if c.opts.onEviction != nil {
-	for k, e := range c.entries {
+		for k, e := range c.entries {
 			c.opts.onEviction(k, e.Data)
 		}
 	}
