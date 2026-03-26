@@ -496,13 +496,11 @@ func (c *Cache[K, T]) Remove(k K) {
 
 // RemoveAll removes all keys from cache.
 // Does not apply on eviction function even if it was set.
-// Runs GC to collect released memory.
 func (c *Cache[K, T]) RemoveAll() {
 	c.Lock()
 	clear(c.entries)
 	c.size = 0
 	c.Unlock()
-	runtime.GC()
 }
 
 // RemoveExpired removes only expired keys. Does not apply on eviction
