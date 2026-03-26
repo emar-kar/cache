@@ -289,15 +289,18 @@ func (c *Cache[K, T]) Scan(_ K) map[K]T { return nil }
 // ScanFunc returns all live (non-expired) entries for which fn returns true.
 // Expired entries that have not yet been cleaned are excluded; use
 // [Cache.Snapshot] if you need to inspect the full internal state.
-func (c *Cache[K, T]) ScanFunc(fn func(K) bool) map[K]T {
-	alive := c.Alive()
-	res := make(map[K]T, 0)
+func (c *Cache[K, T]) ScanFunc(fn func(K, T) bool) map[K]T {
+	c.RLock()
 
-	for k, v := range alive {
-		if fn(k) {
-			res[k] = v
+	res := make(map[K]T)
+
+	for k, e := range c.entries {
+		if !e.expired() && fn(k, e.Data) {
+			res[k] = e.Data
 		}
 	}
+
+	c.RUnlock()
 
 	return res
 }
