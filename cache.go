@@ -542,8 +542,8 @@ func (c *Cache[K, T]) DeleteAll() {
 	c.Lock()
 	defer c.Unlock()
 
+	if c.opts.onEviction != nil {
 	for k, e := range c.entries {
-		if c.opts.onEviction != nil {
 			c.opts.onEviction(k, e.Data)
 		}
 	}
